@@ -199,7 +199,7 @@ func (s *Store) Save(ctx context.Context, x domain.Scan) error {
 			}
 		}
 		t := f.Thresholds
-		_, e = tx.ExecContext(ctx, `INSERT INTO finding_thresholds(finding_id,max_tip_age_seconds,min_verification_progress,max_header_lag,warning_available_percent,failure_available_percent) VALUES(?,?,?,?,?,?)`, f.ID, t.MaxTipAgeSeconds, t.MinVerificationProgress, t.MaxHeaderLag, t.WarningAvailablePercent, t.FailureAvailablePercent)
+		_, e = tx.ExecContext(ctx, `INSERT INTO finding_thresholds(finding_id,max_tip_age_seconds,min_verification_progress,max_header_lag,warning_available_percent,failure_available_percent,electrum_tip_warning_age_seconds,electrum_tip_failure_age_seconds,electrum_lag_warning_blocks,electrum_lag_failure_blocks,max_observation_skew_seconds,max_observation_age_seconds,max_future_skew_seconds) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, f.ID, t.MaxTipAgeSeconds, t.MinVerificationProgress, t.MaxHeaderLag, t.WarningAvailablePercent, t.FailureAvailablePercent, t.ElectrumTipWarningAgeSeconds, t.ElectrumTipFailureAgeSeconds, t.ElectrumLagWarningBlocks, t.ElectrumLagFailureBlocks, t.MaxObservationSkewSeconds, t.MaxObservationAgeSeconds, t.MaxFutureSkewSeconds)
 		if e != nil {
 			return e
 		}
@@ -487,7 +487,7 @@ func (s *Store) loadFindings(ctx context.Context, id string) ([]domain.Finding, 
 			return nil, e
 		}
 		mr.Close()
-		e = s.db.QueryRowContext(ctx, `SELECT max_tip_age_seconds,min_verification_progress,max_header_lag,warning_available_percent,failure_available_percent FROM finding_thresholds WHERE finding_id=?`, f.ID).Scan(&f.Thresholds.MaxTipAgeSeconds, &f.Thresholds.MinVerificationProgress, &f.Thresholds.MaxHeaderLag, &f.Thresholds.WarningAvailablePercent, &f.Thresholds.FailureAvailablePercent)
+		e = s.db.QueryRowContext(ctx, `SELECT max_tip_age_seconds,min_verification_progress,max_header_lag,warning_available_percent,failure_available_percent,electrum_tip_warning_age_seconds,electrum_tip_failure_age_seconds,electrum_lag_warning_blocks,electrum_lag_failure_blocks,max_observation_skew_seconds,max_observation_age_seconds,max_future_skew_seconds FROM finding_thresholds WHERE finding_id=?`, f.ID).Scan(&f.Thresholds.MaxTipAgeSeconds, &f.Thresholds.MinVerificationProgress, &f.Thresholds.MaxHeaderLag, &f.Thresholds.WarningAvailablePercent, &f.Thresholds.FailureAvailablePercent, &f.Thresholds.ElectrumTipWarningAgeSeconds, &f.Thresholds.ElectrumTipFailureAgeSeconds, &f.Thresholds.ElectrumLagWarningBlocks, &f.Thresholds.ElectrumLagFailureBlocks, &f.Thresholds.MaxObservationSkewSeconds, &f.Thresholds.MaxObservationAgeSeconds, &f.Thresholds.MaxFutureSkewSeconds)
 		if e != nil {
 			return nil, e
 		}

@@ -19,10 +19,17 @@ type Config struct {
 	Filesystem   FilesystemThresholds `json:"filesystem"`
 }
 type ElectrumConfig struct {
-	Enabled            bool   `json:"enabled"`
-	Endpoint           string `json:"endpoint"`
-	TimeoutMS          int    `json:"timeout_ms"`
-	BitcoinComponentID string `json:"bitcoin_component_id"`
+	Enabled                   bool   `json:"enabled"`
+	Endpoint                  string `json:"endpoint"`
+	TimeoutMS                 int    `json:"timeout_ms"`
+	BitcoinComponentID        string `json:"bitcoin_component_id"`
+	TipWarningAgeSeconds      int64  `json:"tip_warning_age_seconds"`
+	TipFailureAgeSeconds      int64  `json:"tip_failure_age_seconds"`
+	LagWarningBlocks          int64  `json:"lag_warning_blocks"`
+	LagFailureBlocks          int64  `json:"lag_failure_blocks"`
+	MaxObservationSkewSeconds int64  `json:"max_observation_skew_seconds"`
+	MaxObservationAgeSeconds  int64  `json:"max_observation_age_seconds"`
+	MaxFutureSkewSeconds      int64  `json:"max_future_skew_seconds"`
 }
 type BitcoinConfig struct {
 	RPCEndpoint   string `json:"rpc_endpoint"`
@@ -44,7 +51,7 @@ type FilesystemThresholds struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Electrum: ElectrumConfig{TimeoutMS: 5000}, API: APIConfig{"127.0.0.1:8383"}, DatabasePath: "redline.db", RPCTimeoutMS: 5000, Sync: SyncThresholds{7200, .999, 2}, Filesystem: FilesystemThresholds{15, 5}}
+	return Config{Electrum: ElectrumConfig{TimeoutMS: 5000, TipWarningAgeSeconds: 3600, TipFailureAgeSeconds: 7200, LagWarningBlocks: 2, LagFailureBlocks: 10, MaxObservationSkewSeconds: 30, MaxObservationAgeSeconds: 60, MaxFutureSkewSeconds: 300}, API: APIConfig{"127.0.0.1:8383"}, DatabasePath: "redline.db", RPCTimeoutMS: 5000, Sync: SyncThresholds{7200, .999, 2}, Filesystem: FilesystemThresholds{15, 5}}
 }
 func Load(path string) (Config, error) {
 	c := DefaultConfig()
@@ -116,6 +123,11 @@ func (c Config) Validate() error {
 		if err != nil || (endpoint.Scheme != "tcp" && endpoint.Scheme != "ssl") || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" {
 			return fmt.Errorf("invalid Electrum endpoint")
 		}
+	}
+	if c.Electrum.TipWarningAgeSeconds < 1 || c.Electrum.TipFailureAgeSeconds < c.Electrum.TipWarningAgeSeconds ||
+		c.Electrum.LagWarningBlocks < 1 || c.Electrum.LagFailureBlocks < c.Electrum.LagWarningBlocks ||
+		c.Electrum.MaxObservationSkewSeconds < 0 || c.Electrum.MaxObservationAgeSeconds < 1 || c.Electrum.MaxFutureSkewSeconds < 0 {
+		return fmt.Errorf("invalid Electrum thresholds")
 	}
 	return nil
 }

@@ -314,6 +314,13 @@ type Thresholds struct {
 	MinVerificationProgress                          float64
 	MaxHeaderLag                                     int64
 	WarningAvailablePercent, FailureAvailablePercent float64
+	ElectrumTipWarningAgeSeconds                     int64
+	ElectrumTipFailureAgeSeconds                     int64
+	ElectrumLagWarningBlocks                         int64
+	ElectrumLagFailureBlocks                         int64
+	MaxObservationSkewSeconds                        int64
+	MaxObservationAgeSeconds                         int64
+	MaxFutureSkewSeconds                             int64
 }
 
 type ObservationValue interface {

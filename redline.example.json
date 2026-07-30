@@ -9,7 +9,14 @@
     "enabled": false,
     "endpoint": "",
     "timeout_ms": 5000,
-    "bitcoin_component_id": ""
+    "bitcoin_component_id": "",
+    "tip_warning_age_seconds": 3600,
+    "tip_failure_age_seconds": 7200,
+    "lag_warning_blocks": 2,
+    "lag_failure_blocks": 10,
+    "max_observation_skew_seconds": 30,
+    "max_observation_age_seconds": 60,
+    "max_future_skew_seconds": 300
   },
   "api": {
     "listen_address": "127.0.0.1:8383"

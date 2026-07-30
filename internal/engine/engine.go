@@ -91,16 +91,20 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 	}
 	r.emit(Event{ID: id + "-started", Type: "scan.started", ScanID: id, OccurredAt: now})
 	var rpcObs, transportObs, fsObs *domain.Observation
+	var electrumTransportObs, electrumIdentityObs, electrumTipObs, bitcoinHashObs *domain.Observation
 	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())
 	caps := capabilities.Set{Filesystem: filesystemProvider{r.Config.Bitcoin.DataDirectory}, Clock: capabilities.SystemClock{}}
 	if client != nil {
 		caps.Bitcoin = client
 	}
 	compiledProbes := []probes.Probe{probes.BitcoinChainState{}, probes.FilesystemCapacity{}}
+	var electrumCreateReason domain.UnknownReasonCode
 	if r.Config.Electrum.Enabled {
 		electrumClient, electrumErr := electrum.New(r.Config.Electrum.Endpoint, time.Duration(r.Config.Electrum.TimeoutMS)*time.Millisecond)
 		if electrumErr == nil {
 			caps.Electrum = electrumClient
+		} else {
+			electrumCreateReason = domain.NotConfigured
 		}
 		sideEffect := probes.SideEffect(electrum.EndpointSideEffect(r.Config.Electrum.Endpoint))
 		compiledProbes = append(compiledProbes, probes.ElectrumProtocolState{SideEffect: sideEffect, Timeout: time.Duration(r.Config.Electrum.TimeoutMS) * time.Millisecond})
@@ -113,6 +117,7 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 	}
 	rpcReason := createReason
 	var fsReason domain.UnknownReasonCode
+	var electrumReason domain.UnknownReasonCode
 	for _, p := range catalog.Probes() {
 		d := p.Descriptor()
 		executionID := id + "-" + strings.ReplaceAll(d.ID, "/", "-")
@@ -120,6 +125,9 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 		r.emit(Event{ID: executionID + "-started", Type: "scan.probe.started", ScanID: id, OccurredAt: started, ProbeID: d.ID})
 		probeCtx, cancel := context.WithTimeout(ctx, d.Timeout)
 		result := p.Collect(probeCtx, caps.Scope(d.Required, d.Optional), id, executionID, started)
+		if d.ID == "electrum.protocol-state/v1" && electrumCreateReason != "" {
+			result.Reason = electrumCreateReason
+		}
 		ctxErr := probeCtx.Err()
 		cancel()
 		done := r.now()
@@ -159,6 +167,18 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 			case domain.FilesystemCapacity:
 				o := typed
 				fsObs = &o
+			case domain.ElectrumProtocolTransport:
+				o := typed
+				electrumTransportObs = &o
+			case domain.ElectrumServerIdentity:
+				o := typed
+				electrumIdentityObs = &o
+			case domain.ElectrumChainTip:
+				o := typed
+				electrumTipObs = &o
+			case domain.BitcoinBlockHash:
+				o := typed
+				bitcoinHashObs = &o
 			}
 		}
 		if p.Descriptor().ID == "bitcoin.chain-state/v1" && result.Reason != "" {
@@ -167,10 +187,19 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 		if p.Descriptor().ID == "filesystem.capacity/v1" {
 			fsReason = result.Reason
 		}
+		if p.Descriptor().ID == "electrum.protocol-state/v1" {
+			electrumReason = result.Reason
+		}
 	}
 	scan.Findings = append(scan.Findings, evaluation.RPC(id, transportObs, rpcReason, now))
 	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, now)...)
 	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem, now))
+	if r.Config.Electrum.Enabled {
+		scan.Findings = append(scan.Findings, evaluation.Electrum(id, evaluation.ElectrumEvidence{
+			Transport: electrumTransportObs, Identity: electrumIdentityObs, Tip: electrumTipObs,
+			Bitcoin: rpcObs, BitcoinHash: bitcoinHashObs, Limitation: electrumReason,
+		}, r.Config.Electrum, now)...)
+	}
 	for _, f := range scan.Findings {
 		r.emit(Event{ID: f.ID + "-created", Type: "scan.finding.created", ScanID: id, OccurredAt: f.EvaluatedAt, FindingCode: f.Code, Outcome: string(f.Status)})
 	}
