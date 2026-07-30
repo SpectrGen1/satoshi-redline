@@ -82,7 +82,7 @@ func TestLiveBitcoinScan(t *testing.T) {
 	}
 	assertReportEvidence(t, loaded, report)
 
-	apiJSON := exerciseAPI(t, store, loaded.ID)
+	apiJSON := exerciseAPI(t, store, loaded.ID, config)
 	forbidden := []string{endpoint, cookieFile, dataDirectory, liveCanary}
 	assertAbsent(t, "report JSON", reportJSON, forbidden)
 	assertAbsent(t, "API JSON", apiJSON, forbidden)
@@ -201,9 +201,9 @@ func assertReportEvidence(t *testing.T, scan domain.Scan, report reportv1.Report
 	}
 }
 
-func exerciseAPI(t *testing.T, store *sqlite.Store, scanID string) []byte {
+func exerciseAPI(t *testing.T, store *sqlite.Store, scanID string, config app.Config) []byte {
 	t.Helper()
-	handler := (&apiv1.Server{Store: store}).Handler()
+	handler := (&apiv1.Server{Store: store, Runner: engine.Runner{Config: config}}).Handler()
 	_, sourceFile, _, _ := runtime.Caller(0)
 	specPath := filepath.Join(filepath.Dir(sourceFile), "../../schemas/api/v1/openapi.yaml")
 	document, err := openapi3.NewLoader().LoadFromFile(specPath)
@@ -215,13 +215,18 @@ func exerciseAPI(t *testing.T, store *sqlite.Store, scanID string) []byte {
 		t.Fatal("could not route the API contract for the live test")
 	}
 	var combined bytes.Buffer
-	for _, path := range []string{
-		"/api/v1/meta",
-		"/api/v1/scans/" + scanID,
-		"/api/v1/scans/" + scanID + "/observations",
-		"/api/v1/scans/" + scanID + "/findings",
-	} {
-		request := httptest.NewRequest(http.MethodGet, path, nil)
+	requests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/v1/meta"},
+		{http.MethodPost, "/api/v1/scans"},
+		{http.MethodGet, "/api/v1/scans/" + scanID},
+		{http.MethodGet, "/api/v1/scans/" + scanID + "/observations"},
+		{http.MethodGet, "/api/v1/scans/" + scanID + "/findings"},
+	}
+	for _, liveRequest := range requests {
+		request := httptest.NewRequest(liveRequest.method, liveRequest.path, nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
