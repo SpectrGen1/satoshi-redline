@@ -65,23 +65,36 @@ func (c *Client) Chain(ctx context.Context) (ChainInfo, domain.UnknownReasonCode
 		Headers              *int64   `json:"headers"`
 		VerificationProgress *float64 `json:"verificationprogress"`
 		InitialBlockDownload *bool    `json:"initialblockdownload"`
-		Time                 *int64   `json:"time"`
+		BestBlockHash        *string  `json:"bestblockhash"`
 	}
-	_, reason, reachable := c.call(ctx, "getblockchaininfo", &result)
+	_, reason, reachable := c.call(ctx, "getblockchaininfo", nil, &result)
 	if reason != "" {
 		return ChainInfo{}, reason, reachable
 	}
-	if result.Blocks == nil || result.Headers == nil || result.VerificationProgress == nil || result.InitialBlockDownload == nil || result.Time == nil || *result.Blocks < 0 || *result.Headers < *result.Blocks || *result.VerificationProgress < 0 || *result.VerificationProgress > 1 || *result.Time <= 0 {
+	if result.Blocks == nil || result.Headers == nil || result.VerificationProgress == nil || result.InitialBlockDownload == nil || result.BestBlockHash == nil || *result.BestBlockHash == "" || *result.Blocks < 0 || *result.Headers < *result.Blocks || *result.VerificationProgress < 0 || *result.VerificationProgress > 1 {
 		return ChainInfo{}, domain.InvalidResponse, true
 	}
-	return ChainInfo{*result.Blocks, *result.Headers, *result.VerificationProgress, *result.InitialBlockDownload, time.Unix(*result.Time, 0).UTC()}, "", true
+	var header struct {
+		Time *int64 `json:"time"`
+	}
+	_, reason, headerReached := c.call(ctx, "getblockheader", []any{*result.BestBlockHash}, &header)
+	if reason != "" {
+		return ChainInfo{}, reason, reachable || headerReached
+	}
+	if header.Time == nil || *header.Time <= 0 {
+		return ChainInfo{}, domain.InvalidResponse, true
+	}
+	return ChainInfo{*result.Blocks, *result.Headers, *result.VerificationProgress, *result.InitialBlockDownload, time.Unix(*header.Time, 0).UTC()}, "", true
 }
-func (c *Client) call(ctx context.Context, method string, into any) (json.RawMessage, domain.UnknownReasonCode, bool) {
+func (c *Client) call(ctx context.Context, method string, params []any, into any) (json.RawMessage, domain.UnknownReasonCode, bool) {
+	if params == nil {
+		params = []any{}
+	}
 	b, e := json.Marshal(struct {
 		JSONRPC, Method string
 		Params          []any
 		ID              int
-	}{"1.0", method, []any{}, 1})
+	}{"1.0", method, params, 1})
 	if e != nil {
 		return nil, domain.ProtocolError, false
 	}

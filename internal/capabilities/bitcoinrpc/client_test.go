@@ -3,6 +3,8 @@ package bitcoinrpc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"github.com/satoshi-redline/redline/internal/domain"
 	"net"
 	"net/http"
@@ -12,6 +14,24 @@ import (
 	"testing"
 	"time"
 )
+
+func writeChainRPC(w http.ResponseWriter, r *http.Request, tipTime int64) {
+	var request struct {
+		Method string `json:"method"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	switch request.Method {
+	case "getblockchaininfo":
+		_, _ = w.Write([]byte(`{"result":{"blocks":1,"headers":1,"verificationprogress":1,"initialblockdownload":false,"bestblockhash":"00000001"},"error":null,"id":1}`))
+	case "getblockheader":
+		_, _ = fmt.Fprintf(w, `{"result":{"time":%d},"error":null,"id":1}`, tipTime)
+	default:
+		_, _ = w.Write([]byte(`{"result":null,"error":{"code":-32601},"id":1}`))
+	}
+}
 
 func cookie(t *testing.T) string {
 	t.Helper()
@@ -57,7 +77,7 @@ func TestAmbientProxyIgnored(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
 	t.Setenv("ALL_PROXY", "http://127.0.0.1:1")
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"result":{"blocks":1,"headers":1,"verificationprogress":1,"initialblockdownload":false,"time":1700000000},"error":null,"id":1}`))
+		writeChainRPC(w, r, 1700000000)
 	}))
 	defer s.Close()
 	c, _ := New(s.URL, cookie(t), "", time.Second)
@@ -67,7 +87,6 @@ func TestAmbientProxyIgnored(t *testing.T) {
 }
 
 func TestCollectionFailureMatrix(t *testing.T) {
-	valid := `{"result":{"blocks":1,"headers":1,"verificationprogress":1,"initialblockdownload":false,"time":1700000000},"error":null,"id":1}`
 	tests := []struct {
 		name    string
 		handler http.HandlerFunc
@@ -75,14 +94,14 @@ func TestCollectionFailureMatrix(t *testing.T) {
 		want    domain.UnknownReasonCode
 		reached bool
 	}{
-		{"valid", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(valid)) }, time.Second, "", true},
+		{"valid", func(w http.ResponseWriter, r *http.Request) { writeChainRPC(w, r, 1700000000) }, time.Second, "", true},
 		{"missing fields", func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"result":{"blocks":1},"error":null,"id":1}`))
 		}, time.Second, domain.InvalidResponse, true},
 		{"oversized", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(bytes.Repeat([]byte("x"), maxResponse+1)) }, time.Second, domain.InvalidResponse, true},
 		{"timeout", func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(100 * time.Millisecond)
-			_, _ = w.Write([]byte(valid))
+			_, _ = w.Write([]byte(`{"result":null,"error":null,"id":1}`))
 		}, 10 * time.Millisecond, domain.Timeout, false},
 	}
 	for _, tt := range tests {
@@ -98,6 +117,25 @@ func TestCollectionFailureMatrix(t *testing.T) {
 				t.Fatalf("got %q/%v want %q/%v", reason, reached, tt.want, tt.reached)
 			}
 		})
+	}
+}
+
+func TestBitcoinKnotsChainResponseUsesBestBlockHeaderTime(t *testing.T) {
+	const tipTime = int64(1750000000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChainRPC(w, r, tipTime)
+	}))
+	defer server.Close()
+	client, reason := New(server.URL, cookie(t), "", time.Second)
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	info, reason, reached := client.Chain(context.Background())
+	if reason != "" || !reached {
+		t.Fatalf("collection failed: %q/%v", reason, reached)
+	}
+	if info.TipTime.Unix() != tipTime {
+		t.Fatalf("got tip time %d", info.TipTime.Unix())
 	}
 }
 

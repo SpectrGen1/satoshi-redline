@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
@@ -46,7 +47,18 @@ func TestScanSynchronizedHealthy(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"result":{"blocks":100,"headers":100,"verificationprogress":1,"initialblockdownload":false,"time":` + fmt.Sprintf("%d", now.Unix()) + `},"error":null,"id":1}`))
+		var request struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if request.Method == "getblockchaininfo" {
+			_, _ = w.Write([]byte(`{"result":{"blocks":100,"headers":100,"verificationprogress":1,"initialblockdownload":false,"bestblockhash":"00000001"},"error":null,"id":1}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"result":{"time":` + fmt.Sprintf("%d", now.Unix()) + `},"error":null,"id":1}`))
 	}))
 	defer srv.Close()
 	d := t.TempDir()
