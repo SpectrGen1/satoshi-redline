@@ -183,12 +183,15 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 		{ID: "chain", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.BitcoinChainState{Blocks: 10, Headers: 10, VerificationProgress: 1, TipTime: n}},
 		{ID: "fs", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "filesystem.capacity", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "filesystem.stat/v1", ProviderID: "test", Sensitivity: "none", Value: domain.FilesystemCapacity{TotalBytes: 100, AvailableBytes: 50, MountPresent: true}},
 		{ID: "clock", ScanID: "s", ProbeExecutionID: "p", ComponentID: "system.local", Kind: "system.clock.current", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "clock.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.ClockState{Current: n}},
+		{ID: "electrum-transport", ScanID: "s", ProbeExecutionID: "p", ComponentID: "electrum.primary", Kind: "electrum.protocol.transport", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "electrum.protocol.read/v1", ProviderID: "test", Sensitivity: "local_sensitive", Value: domain.ElectrumProtocolTransport{Reached: true, Transport: domain.ElectrumTransportTCP, TLSVerification: domain.TLSNotApplicable, ProtocolNegotiation: domain.ProtocolAccepted, Category: "valid_protocol_response"}},
+		{ID: "electrum-identity", ScanID: "s", ProbeExecutionID: "p", ComponentID: "electrum.primary", Kind: "electrum.server.identity", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "electrum.protocol.read/v1", ProviderID: "test", Sensitivity: "local_sensitive", Value: domain.ElectrumServerIdentity{ImplementationFamily: domain.ElectrumElectrs, ProtocolVersion: "1.4.3"}},
+		{ID: "electrum-tip", ScanID: "s", ProbeExecutionID: "p", ComponentID: "electrum.primary", Kind: "electrum.chain.tip", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "electrum.protocol.read/v1", ProviderID: "test", Sensitivity: "local_sensitive", Value: domain.ElectrumChainTip{Height: 10, BlockHash: "0011111111111111111111111111111111111111111111111111111111111111", HeaderTime: n}},
 	}
 	reason := domain.Reason(domain.AuthenticationRejected)
 	reason.CapabilityID = "bitcoin.rpc.read/v1"
 	reason.ProviderID = "test"
 	f := domain.Finding{ID: "f", ScanID: "s", Code: "bitcoin.chain.synchronized", ComponentID: "bitcoin.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: n, Role: domain.Required, Reasons: []domain.UnknownReason{reason}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: "bitcoin.chain.state", Problem: domain.EvidenceMissing, ReasonCode: domain.AuthenticationRejected}}, Thresholds: domain.Thresholds{MaxTipAgeSeconds: 60}}
-	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Components: domain.BaseComponents(false), Executions: []domain.ProbeExecution{ex}, Observations: obs, Findings: []domain.Finding{f}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.NoConclusion, Coverage: domain.CoverageSummary{State: domain.Unavailable, ApplicableRequired: 1, UnknownRequired: 1}}}
+	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Components: domain.BaseComponents(true), Executions: []domain.ProbeExecution{ex}, Observations: obs, Findings: []domain.Finding{f}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.NoConclusion, Coverage: domain.CoverageSummary{State: domain.Unavailable, ApplicableRequired: 1, UnknownRequired: 1}}}
 	if e = s.Save(context.Background(), x); e != nil {
 		t.Fatal(e)
 	}
@@ -196,7 +199,7 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(y.Observations) != 4 || len(y.Executions) != 1 || len(y.Findings) != 1 || len(y.Findings[0].Reasons) != 1 || len(y.Findings[0].MissingEvidence) != 1 {
+	if len(y.Observations) != 7 || len(y.Executions) != 1 || len(y.Findings) != 1 || len(y.Findings[0].Reasons) != 1 || len(y.Findings[0].MissingEvidence) != 1 {
 		t.Fatalf("incomplete round trip: %+v", y)
 	}
 	if _, e = s.db.Exec(`DELETE FROM scans WHERE id='s'`); e != nil {

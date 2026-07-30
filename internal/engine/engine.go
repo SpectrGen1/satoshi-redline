@@ -11,6 +11,7 @@ import (
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/capabilities"
 	"github.com/satoshi-redline/redline/internal/capabilities/bitcoinrpc"
+	"github.com/satoshi-redline/redline/internal/capabilities/electrum"
 	"github.com/satoshi-redline/redline/internal/capabilities/filesystem"
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/evaluation"
@@ -95,7 +96,16 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 	if client != nil {
 		caps.Bitcoin = client
 	}
-	catalog, catalogErr := probes.NewCatalog(probes.BitcoinChainState{}, probes.FilesystemCapacity{})
+	compiledProbes := []probes.Probe{probes.BitcoinChainState{}, probes.FilesystemCapacity{}}
+	if r.Config.Electrum.Enabled {
+		electrumClient, electrumErr := electrum.New(r.Config.Electrum.Endpoint, time.Duration(r.Config.Electrum.TimeoutMS)*time.Millisecond)
+		if electrumErr == nil {
+			caps.Electrum = electrumClient
+		}
+		sideEffect := probes.SideEffect(electrum.EndpointSideEffect(r.Config.Electrum.Endpoint))
+		compiledProbes = append(compiledProbes, probes.ElectrumProtocolState{SideEffect: sideEffect, Timeout: time.Duration(r.Config.Electrum.TimeoutMS) * time.Millisecond})
+	}
+	catalog, catalogErr := probes.NewCatalog(compiledProbes...)
 	if r.catalog != nil {
 		catalog = *r.catalog
 	} else if catalogErr != nil {

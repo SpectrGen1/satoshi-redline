@@ -18,6 +18,11 @@ type SideEffect string
 
 const ReadOnly SideEffect = "read_only"
 
+const (
+	LocalConnect SideEffect = "local_connect"
+	LANConnect   SideEffect = "lan_connect"
+)
+
 type Sensitivity string
 
 const SensitiveNone Sensitivity = "none"
@@ -65,5 +70,7 @@ func NewCatalog(items ...Probe) (Catalog, error) {
 	sort.Slice(items, func(i, j int) bool { return items[i].Descriptor().ID < items[j].Descriptor().ID })
 	return Catalog{items}, nil
 }
-func (c Catalog) Probes() []Probe       { return append([]Probe(nil), c.probes...) }
-func CompiledCatalog() (Catalog, error) { return NewCatalog(BitcoinChainState{}, FilesystemCapacity{}) }
+func (c Catalog) Probes() []Probe { return append([]Probe(nil), c.probes...) }
+func CompiledCatalog() (Catalog, error) {
+	return NewCatalog(BitcoinChainState{}, FilesystemCapacity{}, ElectrumProtocolState{SideEffect: LANConnect})
+}

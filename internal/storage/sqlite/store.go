@@ -161,6 +161,12 @@ func (s *Store) Save(ctx context.Context, x domain.Scan) error {
 			_, e = tx.ExecContext(ctx, `INSERT INTO observation_filesystem_capacity(observation_id,total_bytes,available_bytes,read_only,mount_present) VALUES(?,?,?,?,?)`, o.ID, v.TotalBytes, v.AvailableBytes, b(v.ReadOnly), b(v.MountPresent))
 		case domain.ClockState:
 			_, e = tx.ExecContext(ctx, `INSERT INTO observation_clock_state(observation_id,current_time) VALUES(?,?)`, o.ID, ts(v.Current))
+		case domain.ElectrumProtocolTransport:
+			_, e = tx.ExecContext(ctx, `INSERT INTO observation_electrum_protocol_transport(observation_id,reached,transport_kind,tls_verification,protocol_negotiation,category) VALUES(?,?,?,?,?,?)`, o.ID, b(v.Reached), v.Transport, v.TLSVerification, v.ProtocolNegotiation, v.Category)
+		case domain.ElectrumServerIdentity:
+			_, e = tx.ExecContext(ctx, `INSERT INTO observation_electrum_server_identity(observation_id,implementation_family,protocol_version) VALUES(?,?,?)`, o.ID, v.ImplementationFamily, v.ProtocolVersion)
+		case domain.ElectrumChainTip:
+			_, e = tx.ExecContext(ctx, `INSERT INTO observation_electrum_chain_tip(observation_id,height,block_hash,header_time) VALUES(?,?,?,?)`, o.ID, v.Height, v.BlockHash, ts(v.HeaderTime))
 		default:
 			return fmt.Errorf("unsupported observation value")
 		}
@@ -345,6 +351,24 @@ func (s *Store) loadObservations(ctx context.Context, id string) ([]domain.Obser
 				v.Current, e = parse(current)
 			}
 			o.Value = v
+		case "electrum.protocol.transport":
+			var v domain.ElectrumProtocolTransport
+			var reached int
+			e = s.db.QueryRowContext(ctx, `SELECT reached,transport_kind,tls_verification,protocol_negotiation,category FROM observation_electrum_protocol_transport WHERE observation_id=?`, o.ID).Scan(&reached, &v.Transport, &v.TLSVerification, &v.ProtocolNegotiation, &v.Category)
+			v.Reached = reached != 0
+			o.Value = v
+		case "electrum.server.identity":
+			var v domain.ElectrumServerIdentity
+			e = s.db.QueryRowContext(ctx, `SELECT implementation_family,protocol_version FROM observation_electrum_server_identity WHERE observation_id=?`, o.ID).Scan(&v.ImplementationFamily, &v.ProtocolVersion)
+			o.Value = v
+		case "electrum.chain.tip":
+			var v domain.ElectrumChainTip
+			var headerTime string
+			e = s.db.QueryRowContext(ctx, `SELECT height,block_hash,header_time FROM observation_electrum_chain_tip WHERE observation_id=?`, o.ID).Scan(&v.Height, &v.BlockHash, &headerTime)
+			if e == nil {
+				v.HeaderTime, e = parse(headerTime)
+			}
+			o.Value = v
 		default:
 			return nil, fmt.Errorf("unsupported observation kind")
 		}
@@ -363,7 +387,10 @@ func (s *Store) typedValueKind(ctx context.Context, observationID string) (strin
 			UNION ALL SELECT 'bitcoin.chain.state' FROM observation_bitcoin_chain_state WHERE observation_id=?
 			UNION ALL SELECT 'filesystem.capacity' FROM observation_filesystem_capacity WHERE observation_id=?
 			UNION ALL SELECT 'system.clock.current' FROM observation_clock_state WHERE observation_id=?
-		)`, observationID, observationID, observationID, observationID)
+			UNION ALL SELECT 'electrum.protocol.transport' FROM observation_electrum_protocol_transport WHERE observation_id=?
+			UNION ALL SELECT 'electrum.server.identity' FROM observation_electrum_server_identity WHERE observation_id=?
+			UNION ALL SELECT 'electrum.chain.tip' FROM observation_electrum_chain_tip WHERE observation_id=?
+		)`, observationID, observationID, observationID, observationID, observationID, observationID, observationID)
 	if e != nil {
 		return "", e
 	}

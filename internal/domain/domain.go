@@ -212,6 +212,8 @@ const (
 	ConnectionRefused          UnknownReasonCode = "collection.connection_refused"
 	RouteUnreachable           UnknownReasonCode = "collection.route_unreachable"
 	RPCError                   UnknownReasonCode = "collection.rpc_error"
+	TLSFailure                 UnknownReasonCode = "collection.tls_failure"
+	UnsupportedProtocol        UnknownReasonCode = "compatibility.unsupported_protocol"
 )
 
 type DiagnosticStage string
@@ -402,6 +404,125 @@ func (v ClockState) Validate() error {
 	return nil
 }
 
+type ElectrumTransportKind string
+
+const (
+	ElectrumTransportTCP ElectrumTransportKind = "tcp"
+	ElectrumTransportTLS ElectrumTransportKind = "tls"
+)
+
+type TLSVerificationState string
+
+const (
+	TLSNotApplicable       TLSVerificationState = "not_applicable"
+	TLSVerified            TLSVerificationState = "verified"
+	TLSVerificationFailed  TLSVerificationState = "failed"
+	TLSVerificationUnknown TLSVerificationState = "unknown"
+)
+
+type ProtocolNegotiationState string
+
+const (
+	ProtocolAccepted    ProtocolNegotiationState = "accepted"
+	ProtocolUnsupported ProtocolNegotiationState = "unsupported"
+	ProtocolUnknown     ProtocolNegotiationState = "unknown"
+)
+
+type ElectrumProtocolTransport struct {
+	Reached             bool
+	Transport           ElectrumTransportKind
+	TLSVerification     TLSVerificationState
+	ProtocolNegotiation ProtocolNegotiationState
+	Category            string
+}
+
+func (ElectrumProtocolTransport) observationValue() {}
+func (v ElectrumProtocolTransport) Validate() error {
+	if v.Transport != ElectrumTransportTCP && v.Transport != ElectrumTransportTLS {
+		return fmt.Errorf("invalid Electrum transport")
+	}
+	if v.Transport == ElectrumTransportTCP && v.TLSVerification != TLSNotApplicable {
+		return fmt.Errorf("invalid TCP TLS state")
+	}
+	if v.Transport == ElectrumTransportTLS {
+		switch v.TLSVerification {
+		case TLSVerified, TLSVerificationFailed, TLSVerificationUnknown:
+		default:
+			return fmt.Errorf("invalid TLS verification state")
+		}
+	}
+	switch v.ProtocolNegotiation {
+	case ProtocolAccepted, ProtocolUnsupported, ProtocolUnknown:
+	default:
+		return fmt.Errorf("invalid protocol negotiation state")
+	}
+	if !v.Reached && (v.TLSVerification == TLSVerified || v.ProtocolNegotiation == ProtocolAccepted || v.ProtocolNegotiation == ProtocolUnsupported) {
+		return fmt.Errorf("Electrum evidence without reached endpoint")
+	}
+	switch v.Category {
+	case "valid_protocol_response", string(NotConfigured), string(Timeout), string(Cancelled),
+		string(ProtocolError), string(InvalidResponse), string(ConnectionRefused),
+		string(RouteUnreachable), string(TLSFailure), string(UnsupportedProtocol), string(RPCError):
+	default:
+		return fmt.Errorf("invalid Electrum transport category")
+	}
+	return nil
+}
+
+type ElectrumImplementationFamily string
+
+const (
+	ElectrumElectrs ElectrumImplementationFamily = "electrs"
+	ElectrumFulcrum ElectrumImplementationFamily = "fulcrum"
+	ElectrumUnknown ElectrumImplementationFamily = "unknown"
+)
+
+type ElectrumServerIdentity struct {
+	ImplementationFamily ElectrumImplementationFamily
+	ProtocolVersion      string
+}
+
+func (ElectrumServerIdentity) observationValue() {}
+func (v ElectrumServerIdentity) Validate() error {
+	switch v.ImplementationFamily {
+	case ElectrumElectrs, ElectrumFulcrum, ElectrumUnknown:
+	default:
+		return fmt.Errorf("invalid Electrum implementation family")
+	}
+	switch v.ProtocolVersion {
+	case "1.4", "1.4.1", "1.4.2", "1.4.3":
+	default:
+		return fmt.Errorf("invalid Electrum protocol version")
+	}
+	return nil
+}
+
+type ElectrumChainTip struct {
+	Height     int64
+	BlockHash  string
+	HeaderTime time.Time
+}
+
+func (ElectrumChainTip) observationValue() {}
+func (v ElectrumChainTip) Validate() error {
+	if v.Height < 0 || !validHex(v.BlockHash, 64) || v.HeaderTime.IsZero() {
+		return fmt.Errorf("invalid Electrum chain tip")
+	}
+	return nil
+}
+
+func validHex(value string, size int) bool {
+	if len(value) != size {
+		return false
+	}
+	for _, c := range value {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 type Observation struct {
 	ID, ScanID, ProbeExecutionID, ComponentID, Kind, SchemaVersion, CapabilityID, ProviderID, Sensitivity string
 	ObservedAt                                                                                            time.Time
@@ -422,6 +543,12 @@ func (o Observation) Validate() error {
 		expected = "filesystem.capacity"
 	case ClockState:
 		expected = "system.clock.current"
+	case ElectrumProtocolTransport:
+		expected = "electrum.protocol.transport"
+	case ElectrumServerIdentity:
+		expected = "electrum.server.identity"
+	case ElectrumChainTip:
+		expected = "electrum.chain.tip"
 	default:
 		return fmt.Errorf("unknown observation value")
 	}

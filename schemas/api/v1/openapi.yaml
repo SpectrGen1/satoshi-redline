@@ -91,8 +91,8 @@ components:
         scan_mode: {type: string, enum: [safe]}
         required_capabilities: {type: array, items: {type: string, minLength: 1}}
         optional_capabilities: {type: array, items: {type: string, minLength: 1}}
-        side_effects: {type: array, minItems: 1, items: {type: string, enum: [read_only]}}
-        observation_kinds: {type: array, minItems: 1, items: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}}
+        side_effects: {type: array, minItems: 1, items: {type: string, enum: [read_only, local_connect, lan_connect]}}
+        observation_kinds: {type: array, minItems: 1, items: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current, electrum.protocol.transport, electrum.server.identity, electrum.chain.tip]}}
     Meta:
       type: object
       additionalProperties: false
