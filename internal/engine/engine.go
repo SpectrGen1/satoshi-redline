@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"github.com/satoshi-redline/redline/internal/app"
+	"github.com/satoshi-redline/redline/internal/capabilities"
 	"github.com/satoshi-redline/redline/internal/capabilities/bitcoinrpc"
 	"github.com/satoshi-redline/redline/internal/capabilities/filesystem"
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/evaluation"
+	"github.com/satoshi-redline/redline/internal/probes"
 	"time"
 )
 
@@ -18,6 +20,12 @@ type Runner struct {
 }
 type ScanStore interface {
 	Save(context.Context, domain.Scan) error
+}
+type filesystemProvider struct{ path string }
+
+func (p filesystemProvider) Stat(ctx context.Context) (capabilities.FilesystemCapacity, domain.UnknownReason) {
+	v, r := filesystem.Stat(ctx, p.path)
+	return capabilities.FilesystemCapacity{Total: v.Total, Available: v.Available, ReadOnly: v.ReadOnly, MountPresent: v.MountPresent}, r
 }
 
 // ScanAndPersist is the single application workflow shared by CLI and daemon.
@@ -42,31 +50,49 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	scan.Observations = append(scan.Observations, domain.Observation{ID: id + "-clock", ScanID: id, Kind: "system.clock.current/v1", ComponentID: "system.local", ObservedAt: now})
 	var rpcObs *domain.Observation
 	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())
+	caps := capabilities.Set{Filesystem: filesystemProvider{r.Config.Bitcoin.DataDirectory}, Clock: capabilities.SystemClock{}}
+	if client != nil {
+		caps.Bitcoin = client
+	}
+	catalog, catalogErr := probes.NewCatalog(probes.BitcoinChainState{}, probes.FilesystemCapacity{})
+	if catalogErr != nil {
+		return domain.Scan{}, catalogErr
+	}
 	rpcReach := false
 	rpcReason := createReason
-	if client != nil {
-		info, reason, reachable := client.Chain(ctx)
-		rpcReach = reachable
-		rpcReason = reason
-		if reason == "" {
-			o := domain.Observation{ID: id + "-rpc", ScanID: id, Kind: "bitcoin.rpc.response/v1", ComponentID: "bitcoin.primary", ObservedAt: now, RPCReachable: &rpcReach}
-			scan.Observations = append(scan.Observations, o)
-			rpcObs = &domain.Observation{ID: id + "-chain", ScanID: id, Kind: "bitcoin.chain.state/v1", ComponentID: "bitcoin.primary", ObservedAt: now, Blocks: &info.Blocks, Headers: &info.Headers, VerificationProgress: &info.VerificationProgress, InitialBlockDownload: &info.InitialBlockDownload, TipTime: &info.TipTime}
-			scan.Observations = append(scan.Observations, *rpcObs)
+	var fsReason domain.UnknownReason
+	var fsObs *domain.Observation
+	for _, p := range catalog.Probes() {
+		executionID := id + "-" + p.Descriptor().ID
+		started := r.now()
+		result := p.Collect(ctx, caps, id, executionID, started)
+		done := r.now()
+		scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: executionID, ScanID: id, ProbeID: p.Descriptor().ID, Outcome: executionOutcome(result.Reason), StartedAt: started, FinishedAt: done, DurationMS: done.Sub(started).Milliseconds(), Reason: result.Reason})
+		for _, typed := range result.Values {
+			switch v := typed.Value.(type) {
+			case domain.RPCTransportResult:
+				rpcReach = v.Reached
+				if result.Reason != "" {
+					rpcReason = result.Reason
+				}
+				scan.Observations = append(scan.Observations, domain.Observation{ID: typed.ID, ScanID: id, Kind: "bitcoin.rpc.response/v1", ComponentID: "bitcoin.primary", ObservedAt: typed.ObservedAt, RPCReachable: &v.Reached})
+			case domain.BitcoinChainState:
+				rpcObs = &domain.Observation{ID: typed.ID, ScanID: id, Kind: "bitcoin.chain.state/v1", ComponentID: "bitcoin.primary", ObservedAt: typed.ObservedAt, Blocks: &v.Blocks, Headers: &v.Headers, VerificationProgress: &v.VerificationProgress, InitialBlockDownload: &v.InitialBlockDownload, TipTime: &v.TipTime}
+				scan.Observations = append(scan.Observations, *rpcObs)
+			case domain.FilesystemCapacity:
+				fsObs = &domain.Observation{ID: typed.ID, ScanID: id, Kind: "filesystem.capacity/v1", ComponentID: "bitcoin.primary", ObservedAt: typed.ObservedAt, TotalBytes: &v.TotalBytes, AvailableBytes: &v.AvailableBytes, ReadOnly: &v.ReadOnly, MountPresent: &v.MountPresent}
+				scan.Observations = append(scan.Observations, *fsObs)
+			}
+		}
+		if p.Descriptor().ID == "bitcoin.chain-state/v1" && result.Reason != "" {
+			rpcReason = result.Reason
+		}
+		if p.Descriptor().ID == "filesystem.capacity/v1" {
+			fsReason = result.Reason
 		}
 	}
-	bitcoinDone := r.now()
-	scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: id + "-bitcoin-probe", ScanID: id, ProbeID: "bitcoin.chain-state/v1", Outcome: executionOutcome(rpcReason), StartedAt: now, FinishedAt: bitcoinDone, DurationMS: bitcoinDone.Sub(now).Milliseconds(), Reason: rpcReason})
 	scan.Findings = append(scan.Findings, evaluation.RPC(id, &rpcReach, rpcReason))
 	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, now)...)
-	cap, fsReason := filesystem.Stat(ctx, r.Config.Bitcoin.DataDirectory)
-	var fsObs *domain.Observation
-	if fsReason == "" {
-		fsObs = &domain.Observation{ID: id + "-fs", ScanID: id, Kind: "filesystem.capacity/v1", ComponentID: "bitcoin.primary", ObservedAt: now, TotalBytes: &cap.Total, AvailableBytes: &cap.Available, ReadOnly: &cap.ReadOnly, MountPresent: &cap.MountPresent}
-		scan.Observations = append(scan.Observations, *fsObs)
-	}
-	filesystemDone := r.now()
-	scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: id + "-filesystem-probe", ScanID: id, ProbeID: "filesystem.capacity/v1", Outcome: executionOutcome(fsReason), StartedAt: bitcoinDone, FinishedAt: filesystemDone, DurationMS: filesystemDone.Sub(bitcoinDone).Milliseconds(), Reason: fsReason})
 	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem))
 	scan.Summary = evaluation.Summary(scan.Findings)
 	scan.FinishedAt = r.now()

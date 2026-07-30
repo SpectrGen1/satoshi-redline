@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/capabilities"
+	"github.com/satoshi-redline/redline/internal/domain"
 	"sort"
 	"time"
 )
@@ -39,9 +40,13 @@ func (d Descriptor) Validate() error {
 	return nil
 }
 
+type Result struct {
+	Values []domain.TypedObservation
+	Reason domain.UnknownReason
+}
 type Probe interface {
 	Descriptor() Descriptor
-	Collect(context.Context, capabilities.Set) error
+	Collect(context.Context, capabilities.Set, string, string, time.Time) Result
 }
 type Catalog struct{ probes []Probe }
 
