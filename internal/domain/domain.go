@@ -58,6 +58,7 @@ const (
 	InvalidResponse            UnknownReason = "collection.invalid_response"
 	UnsupportedSchema          UnknownReason = "compatibility.unsupported_response_schema"
 	StaleEvidence              UnknownReason = "evidence.stale"
+	TemporallyInconsistent     UnknownReason = "evidence.temporally_inconsistent"
 	RequiredObservationMissing UnknownReason = "evidence.required_observation_missing"
 	EvaluationInternalError    UnknownReason = "evaluation.internal_error"
 	AuthenticationRejected     UnknownReason = "access.authentication_rejected"

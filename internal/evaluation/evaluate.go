@@ -38,6 +38,12 @@ func Chain(scan string, obs *domain.Observation, reason domain.UnknownReason, c 
 	if reason != "" || obs == nil || obs.Blocks == nil || obs.Headers == nil || obs.VerificationProgress == nil || obs.InitialBlockDownload == nil || obs.TipTime == nil {
 		return unknown(first(reason, domain.RequiredObservationMissing))
 	}
+	if *obs.Blocks < 0 || *obs.Headers < *obs.Blocks || *obs.VerificationProgress < 0 || *obs.VerificationProgress > 1 {
+		return unknown(domain.InvalidResponse)
+	}
+	if obs.TipTime.After(now.Add(time.Minute)) {
+		return unknown(domain.TemporallyInconsistent)
+	}
 	if now.Sub(*obs.TipTime) > time.Duration(c.MaxTipAgeSeconds)*time.Second {
 		return []domain.Finding{finding(scan, "bitcoin.chain.synchronized", domain.Unknown, domain.StaleEvidence, p, true), finding(scan, "bitcoin.chain.tip-freshness", domain.Warning, "", p, true)}
 	}
