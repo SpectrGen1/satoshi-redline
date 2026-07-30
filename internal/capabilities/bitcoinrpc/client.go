@@ -101,9 +101,10 @@ func (c *Client) call(ctx context.Context, method string, params []any, into any
 		params = []any{}
 	}
 	b, e := json.Marshal(struct {
-		JSONRPC, Method string
-		Params          []any
-		ID              int
+		JSONRPC string `json:"jsonrpc"`
+		Method  string `json:"method"`
+		Params  []any  `json:"params"`
+		ID      int    `json:"id"`
 	}{"1.0", method, params, 1})
 	if e != nil {
 		return nil, domain.ProtocolError, false

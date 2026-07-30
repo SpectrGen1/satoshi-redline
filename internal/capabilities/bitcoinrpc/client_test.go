@@ -16,14 +16,27 @@ import (
 )
 
 func writeChainRPC(w http.ResponseWriter, r *http.Request, tipTime int64) {
-	var request struct {
-		Method string `json:"method"`
-	}
+	var request map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	switch request.Method {
+	for _, key := range []string{"jsonrpc", "method", "params", "id"} {
+		if _, ok := request[key]; !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+	}
+	if len(request) != 4 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	var method string
+	if err := json.Unmarshal(request["method"], &method); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	switch method {
 	case "getblockchaininfo":
 		_, _ = w.Write([]byte(`{"result":{"blocks":1,"headers":1,"verificationprogress":1,"initialblockdownload":false,"bestblockhash":"00000001"},"error":null,"id":1}`))
 	case "getblockheader":
