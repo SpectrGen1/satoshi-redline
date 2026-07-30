@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/domain"
@@ -9,9 +10,26 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+type eventRecorder struct {
+	events      []Event
+	panicOnEmit bool
+}
+
+func (e *eventRecorder) Emit(v Event) {
+	if e.panicOnEmit {
+		panic("CANARY_SECRET")
+	}
+	e.events = append(e.events, v)
+}
+
+type failingStore struct{}
+
+func (failingStore) Save(context.Context, domain.Scan) error { return errors.New("CANARY_SECRET") }
 
 func TestScanSynchronizedHealthy(t *testing.T) {
 	now := time.Now().UTC()
@@ -59,5 +77,32 @@ func TestMissingEvidenceIsNotPass(t *testing.T) {
 		if f.Status == domain.Unknown && len(f.Reasons) == 0 {
 			t.Fatal("unknown lacks reason")
 		}
+	}
+}
+
+func TestScanFailedEventOnPersistenceFailure(t *testing.T) {
+	sink := &eventRecorder{}
+	c := app.DefaultConfig()
+	_, e := (Runner{Config: c, Events: sink}).ScanAndPersist(context.Background(), failingStore{})
+	if e == nil {
+		t.Fatal("expected error")
+	}
+	found := false
+	for _, v := range sink.events {
+		if v.Type == "scan.failed" {
+			found = true
+		}
+		if strings.Contains(v.Outcome, "CANARY_SECRET") {
+			t.Fatal("error leaked into event")
+		}
+	}
+	if !found {
+		t.Fatal("scan.failed not emitted")
+	}
+}
+func TestEventSinkCannotBreakScan(t *testing.T) {
+	c := app.DefaultConfig()
+	if _, e := (Runner{Config: c, Events: &eventRecorder{panicOnEmit: true}}).Scan(context.Background()); e != nil {
+		t.Fatal(e)
 	}
 }

@@ -15,6 +15,9 @@ type Capacity struct {
 
 // Stat is scoped to the configured path and never lists directory contents.
 func Stat(ctx context.Context, path string) (Capacity, domain.UnknownReasonCode) {
+	return statWith(ctx, path, syscall.Statfs)
+}
+func statWith(ctx context.Context, path string, statfs func(string, *syscall.Statfs_t) error) (Capacity, domain.UnknownReasonCode) {
 	if path == "" {
 		return Capacity{}, domain.NotConfigured
 	}
@@ -24,7 +27,7 @@ func Stat(ctx context.Context, path string) (Capacity, domain.UnknownReasonCode)
 	default:
 	}
 	var s syscall.Statfs_t
-	if e := syscall.Statfs(path, &s); e != nil {
+	if e := statfs(path, &s); e != nil {
 		if os.IsPermission(e) {
 			return Capacity{}, domain.PermissionDenied
 		}

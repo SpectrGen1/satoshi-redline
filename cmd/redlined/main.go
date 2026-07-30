@@ -38,22 +38,28 @@ func run(path string, euid func() int) error {
 	}
 	defer s.Close()
 	api := &v1.Server{Runner: engine.Runner{Config: c}, Store: s}
-	server := &http.Server{Addr: c.API.ListenAddress, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	server := newHTTPServer(c.API.ListenAddress, api.Handler())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	fmt.Printf("redlined listening on %s\n", c.API.ListenAddress)
+	return serve(ctx, server)
+}
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+}
+func serve(ctx context.Context, server *http.Server) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe() }()
-	fmt.Printf("redlined listening on %s\n", c.API.ListenAddress)
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if e = server.Shutdown(shutdownCtx); e != nil {
+		if e := server.Shutdown(shutdownCtx); e != nil {
 			return fmt.Errorf("server shutdown failed")
 		}
 		fmt.Println("redlined stopped")
 		return nil
-	case e = <-errCh:
+	case e := <-errCh:
 		if errors.Is(e, http.ErrServerClosed) {
 			return nil
 		}

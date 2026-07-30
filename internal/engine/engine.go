@@ -30,7 +30,7 @@ type EventSink interface{ Emit(Event) }
 
 func (r Runner) emit(e Event) {
 	if r.Events != nil {
-		r.Events.Emit(e)
+		func() { defer func() { _ = recover() }(); r.Events.Emit(e) }()
 	}
 }
 
@@ -51,6 +51,7 @@ func (r Runner) ScanAndPersist(ctx context.Context, store ScanStore) (domain.Sca
 		return x, e
 	}
 	if e = store.Save(ctx, x); e != nil {
+		r.emit(Event{ID: x.ID + "-failed", Type: "scan.failed", ScanID: x.ID, OccurredAt: r.now(), Outcome: "persistence_failed"})
 		return x, e
 	}
 	return x, nil
@@ -63,6 +64,12 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 		return domain.Scan{}, err
 	}
 	scan := domain.Scan{ID: id, StartedAt: now, Status: "running"}
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			r.emit(Event{ID: id + "-failed", Type: "scan.failed", ScanID: id, OccurredAt: r.now(), Outcome: "engine_failed"})
+		}
+	}()
 	r.emit(Event{ID: id + "-started", Type: "scan.started", ScanID: id, OccurredAt: now})
 	var rpcObs, transportObs, fsObs *domain.Observation
 	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())
@@ -141,6 +148,7 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	scan.FinishedAt = r.now()
 	scan.Status = "completed"
 	r.emit(Event{ID: id + "-completed", Type: "scan.completed", ScanID: id, OccurredAt: scan.FinishedAt, Outcome: scan.Status})
+	succeeded = true
 	return scan, nil
 }
 func (r Runner) now() time.Time {
