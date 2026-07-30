@@ -18,9 +18,10 @@ import (
 )
 
 type Runner struct {
-	Config app.Config
-	Now    func() time.Time
-	Events EventSink
+	Config  app.Config
+	Now     func() time.Time
+	Events  EventSink
+	catalog *probes.Catalog
 }
 type Event struct {
 	ID, Type, ScanID              string
@@ -88,8 +89,10 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 		caps.Bitcoin = client
 	}
 	catalog, catalogErr := probes.NewCatalog(probes.BitcoinChainState{}, probes.FilesystemCapacity{})
-	if catalogErr != nil {
-		return domain.Scan{}, catalogErr
+	if r.catalog != nil {
+		catalog = *r.catalog
+	} else if catalogErr != nil {
+		return scan, catalogErr
 	}
 	rpcReason := createReason
 	var fsReason domain.UnknownReasonCode

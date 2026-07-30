@@ -46,3 +46,36 @@ func TestFilesystemBoundariesAndInvalidValues(t *testing.T) {
 		})
 	}
 }
+
+func TestChainEvaluationMatrix(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cfg := app.DefaultConfig().Sync
+	observation := func(value domain.BitcoinChainState) *domain.Observation {
+		return &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: value}
+	}
+	base := domain.BitcoinChainState{Blocks: 100, Headers: 100, VerificationProgress: 1, TipTime: now}
+	tests := []struct {
+		name string
+		edit func(*domain.BitcoinChainState)
+		sync domain.Status
+		tip  domain.Status
+	}{
+		{"synchronized", func(*domain.BitcoinChainState) {}, domain.Pass, domain.Pass},
+		{"initial block download", func(v *domain.BitcoinChainState) { v.InitialBlockDownload = true }, domain.Failure, domain.Pass},
+		{"header lag", func(v *domain.BitcoinChainState) { v.Headers = v.Blocks + cfg.MaxHeaderLag + 1 }, domain.Failure, domain.Pass},
+		{"low verification progress", func(v *domain.BitcoinChainState) { v.VerificationProgress = cfg.MinVerificationProgress - .001 }, domain.Failure, domain.Pass},
+		{"stale tip", func(v *domain.BitcoinChainState) {
+			v.TipTime = now.Add(-time.Duration(cfg.MaxTipAgeSeconds+1) * time.Second)
+		}, domain.Unknown, domain.Warning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			value := base
+			tt.edit(&value)
+			findings := Chain("s", observation(value), "", cfg, now)
+			if findings[0].Status != tt.sync || findings[1].Status != tt.tip {
+				t.Fatalf("got %s/%s", findings[0].Status, findings[1].Status)
+			}
+		})
+	}
+}

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
+	"github.com/satoshi-redline/redline/internal/capabilities"
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/probes"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,6 +166,148 @@ func TestExecutionOutcomeClassification(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := executionOutcome(tt.result, tt.parentErr, tt.probeErr); got != tt.want {
 				t.Fatalf("got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCancelledScanAndPartialProviderFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelSink := &eventRecorder{}
+	cancelled, err := (Runner{Config: app.DefaultConfig(), Events: cancelSink}).Scan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, execution := range cancelled.Executions {
+		if execution.Outcome != domain.ExecutionCancelled {
+			t.Fatalf("outcome = %s", execution.Outcome)
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("malformed"))
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cookiePath := filepath.Join(root, "cookie")
+	if err = os.WriteFile(cookiePath, []byte("u:p"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := app.DefaultConfig()
+	config.Bitcoin.RPCEndpoint = server.URL
+	config.Bitcoin.CookieFile = cookiePath
+	config.Bitcoin.DataDirectory = root
+	partial, err := (Runner{Config: config}).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, execution := range partial.Executions {
+		if execution.ProbeID == "bitcoin.chain-state/v1" {
+			found = true
+			if execution.Outcome != domain.ExecutionPartial || execution.Limitation != domain.InvalidResponse {
+				t.Fatalf("execution = %+v", execution)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("bitcoin execution missing")
+	}
+}
+
+func TestConfirmedRPCFailureSurvivesUnknownFilesystem(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "http://" + listener.Addr().String()
+	_ = listener.Close()
+	cookiePath := filepath.Join(t.TempDir(), "cookie")
+	if err = os.WriteFile(cookiePath, []byte("u:p"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := app.DefaultConfig()
+	config.Bitcoin.RPCEndpoint = endpoint
+	config.Bitcoin.CookieFile = cookiePath
+	scan, err := (Runner{Config: config}).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scan.Summary.Health != domain.HealthFailure || scan.Summary.Coverage.State != domain.Minimal {
+		t.Fatalf("summary = %+v", scan.Summary)
+	}
+}
+
+type invalidInternalProbe struct{}
+
+func (invalidInternalProbe) Descriptor() probes.Descriptor {
+	return probes.Descriptor{ID: "test.invalid/v1", Version: "1.0.0", ComponentKinds: []string{"bitcoin-node"}, Required: []capabilities.ID{capabilities.ClockRead}, Mode: probes.Safe, Timeout: time.Second, SideEffects: []probes.SideEffect{probes.ReadOnly}, Sensitivity: probes.SensitiveNone, ObservationKinds: []string{"bitcoin.chain.state"}}
+}
+func (invalidInternalProbe) Collect(context.Context, capabilities.Set, string, string, time.Time) probes.Result {
+	return probes.Result{Values: []domain.Observation{{ID: "CANARY_INTERNAL_PROBE_85fc", Kind: "bitcoin.chain.state", Value: domain.FilesystemCapacity{TotalBytes: 1, MountPresent: true}}}}
+}
+
+func TestInternalProbeCanaryDoesNotEnterFailureEventOrError(t *testing.T) {
+	catalog, err := probes.NewCatalog(invalidInternalProbe{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &eventRecorder{}
+	_, err = (Runner{Config: app.DefaultConfig(), Events: sink, catalog: &catalog}).Scan(context.Background())
+	if err == nil {
+		t.Fatal("expected invalid observation failure")
+	}
+	var output strings.Builder
+	output.WriteString(err.Error())
+	for _, event := range sink.events {
+		output.WriteString(event.ID)
+		output.WriteString(event.Type)
+		output.WriteString(event.Outcome)
+	}
+	if strings.Contains(output.String(), "CANARY_INTERNAL_PROBE_85fc") {
+		t.Fatal("internal probe canary leaked")
+	}
+}
+
+func TestReachedEndpointDiagnosticDistinctions(t *testing.T) {
+	tests := []struct {
+		name           string
+		handler        http.HandlerFunc
+		authentication domain.AuthenticationState
+	}{
+		{"authentication rejected", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }, domain.AuthenticationRejectedState},
+		{"malformed response", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("malformed")) }, domain.AuthenticationUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(tt.handler)
+			defer server.Close()
+			root := t.TempDir()
+			cookiePath := filepath.Join(root, "cookie")
+			if err := os.WriteFile(cookiePath, []byte("u:p"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			config := app.DefaultConfig()
+			config.Bitcoin.RPCEndpoint = server.URL
+			config.Bitcoin.CookieFile = cookiePath
+			config.Bitcoin.DataDirectory = root
+			scan, err := (Runner{Config: config}).Scan(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, finding := range scan.Findings {
+				if finding.Code == "bitcoin.rpc.reachable" && finding.Status != domain.Pass {
+					t.Fatalf("transport finding = %s", finding.Status)
+				}
+				if strings.HasPrefix(finding.Code, "bitcoin.chain.") && finding.Status != domain.Unknown {
+					t.Fatalf("chain finding = %s", finding.Status)
+				}
+			}
+			for _, observation := range scan.Observations {
+				if value, ok := observation.Value.(domain.RPCTransportResult); ok && value.Authentication != tt.authentication {
+					t.Fatalf("authentication = %s", value.Authentication)
+				}
 			}
 		})
 	}

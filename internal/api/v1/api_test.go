@@ -304,6 +304,51 @@ func TestSSEStreamsMultipleSafeEventsAndUnsubscribes(t *testing.T) {
 	}
 }
 
+func TestPersistenceCanaryDoesNotEnterAPIOrSSEFailure(t *testing.T) {
+	const canary = "CANARY_STORAGE_FAILURE_b491"
+	server := &Server{Runner: engine.Runner{Config: app.DefaultConfig()}, Store: &fakeStore{saveErr: errors.New(canary)}}
+	handler := server.Handler()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	streamRequest := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	stream := &streamRecorder{header: make(http.Header)}
+	streamDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(stream, streamRequest)
+		close(streamDone)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.hub.mu.RLock()
+		subscribers := len(server.hub.subs)
+		server.hub.mu.RUnlock()
+		if subscribers == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("SSE subscriber not registered")
+		}
+		runtime.Gosched()
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/scans", nil))
+	deadline = time.Now().Add(time.Second)
+	for !strings.Contains(stream.String(), "scan.failed") {
+		if time.Now().After(deadline) {
+			t.Fatalf("failure event not streamed: %s", stream.String())
+		}
+		runtime.Gosched()
+	}
+	cancel()
+	<-streamDone
+	if strings.Contains(response.Body.String(), canary) || strings.Contains(stream.String(), canary) {
+		t.Fatal("storage error canary leaked")
+	}
+	if !strings.Contains(stream.String(), "persistence_failed") {
+		t.Fatalf("safe outcome missing: %s", stream.String())
+	}
+}
+
 func TestEventJSONConformsToSchema(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	schemaPath := filepath.Join(filepath.Dir(file), "../../../schemas/api/v1/events.schema.json")

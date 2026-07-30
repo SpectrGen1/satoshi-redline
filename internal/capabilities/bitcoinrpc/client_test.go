@@ -1,8 +1,10 @@
 package bitcoinrpc
 
 import (
+	"bytes"
 	"context"
 	"github.com/satoshi-redline/redline/internal/domain"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,6 +54,8 @@ func TestAuthMalformedRPCAndRedirect(t *testing.T) {
 }
 func TestAmbientProxyIgnored(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:1")
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"result":{"blocks":1,"headers":1,"verificationprogress":1,"initialblockdownload":false,"time":1700000000},"error":null,"id":1}`))
 	}))
@@ -59,5 +63,58 @@ func TestAmbientProxyIgnored(t *testing.T) {
 	c, _ := New(s.URL, cookie(t), "", time.Second)
 	if _, r, _ := c.Chain(context.Background()); r != "" {
 		t.Fatal(r)
+	}
+}
+
+func TestCollectionFailureMatrix(t *testing.T) {
+	valid := `{"result":{"blocks":1,"headers":1,"verificationprogress":1,"initialblockdownload":false,"time":1700000000},"error":null,"id":1}`
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		timeout time.Duration
+		want    domain.UnknownReasonCode
+		reached bool
+	}{
+		{"valid", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(valid)) }, time.Second, "", true},
+		{"missing fields", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"result":{"blocks":1},"error":null,"id":1}`))
+		}, time.Second, domain.InvalidResponse, true},
+		{"oversized", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(bytes.Repeat([]byte("x"), maxResponse+1)) }, time.Second, domain.InvalidResponse, true},
+		{"timeout", func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(100 * time.Millisecond)
+			_, _ = w.Write([]byte(valid))
+		}, 10 * time.Millisecond, domain.Timeout, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(tt.handler)
+			defer server.Close()
+			client, reason := New(server.URL, cookie(t), "", tt.timeout)
+			if reason != "" {
+				t.Fatal(reason)
+			}
+			_, reason, reached := client.Chain(context.Background())
+			if reason != tt.want || reached != tt.reached {
+				t.Fatalf("got %q/%v want %q/%v", reason, reached, tt.want, tt.reached)
+			}
+		})
+	}
+}
+
+func TestConnectionRefusal(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "http://" + listener.Addr().String()
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client, reason := New(endpoint, cookie(t), "", time.Second)
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	if _, reason, reached := client.Chain(context.Background()); reason != domain.ConnectionRefused || reached {
+		t.Fatalf("got %q/%v", reason, reached)
 	}
 }

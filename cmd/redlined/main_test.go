@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,17 @@ import (
 func TestRootGuard(t *testing.T) {
 	if e := run("unused", func() int { return 0 }); e == nil || !strings.Contains(e.Error(), "refuses to run as root") {
 		t.Fatalf("got %v", e)
+	}
+}
+
+func TestDaemonErrorDoesNotExposeConfigurationPath(t *testing.T) {
+	const canary = "CANARY_DAEMON_CONFIG_31af"
+	err := run(filepath.Join(t.TempDir(), canary), func() int { return 1000 })
+	if err == nil {
+		t.Fatal("expected configuration error")
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("configuration path leaked: %v", err)
 	}
 }
 

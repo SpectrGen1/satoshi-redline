@@ -3,7 +3,9 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/domain"
+	"github.com/satoshi-redline/redline/internal/engine"
 	"os"
 	"path/filepath"
 	"testing"
@@ -167,5 +169,66 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte("CANARY_SECRET")) {
 		t.Fatal("canary persisted")
+	}
+}
+
+func TestCanaryAbsentFromActualWALSHMAndRollbackJournal(t *testing.T) {
+	const canary = "CANARY_FILESYSTEM_PATH_d720"
+	root := t.TempDir()
+	dataDirectory := filepath.Join(root, canary)
+	if err := os.Mkdir(dataDirectory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(root, "privacy.db")
+	store, err := Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	store.db.SetMaxOpenConns(1)
+	if _, err = store.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatal(err)
+	}
+	config := app.DefaultConfig()
+	config.Bitcoin.DataDirectory = dataDirectory
+	if _, err = (engine.Runner{Config: config}).ScanAndPersist(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		path := databasePath + suffix
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("%s was not created: %v", suffix, readErr)
+		}
+		if bytes.Contains(body, []byte(canary)) {
+			t.Fatalf("canary entered %s", suffix)
+		}
+	}
+	if _, err = store.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.db.Exec(`PRAGMA journal_mode=DELETE`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(`UPDATE scans SET status='running'`); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	journalPath := databasePath + "-journal"
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("rollback journal was not created: %v", err)
+	}
+	if bytes.Contains(journal, []byte(canary)) {
+		_ = tx.Rollback()
+		t.Fatal("canary entered rollback journal")
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 }
