@@ -1,34 +1,62 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"github.com/satoshi-redline/redline/internal/api/v1"
+	v1 "github.com/satoshi-redline/redline/internal/api/v1"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/engine"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
 	p := flag.String("config", "redline.json", "configuration file")
 	flag.Parse()
-	c, e := app.Load(*p)
+	if e := run(*p, os.Geteuid); e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		os.Exit(1)
+	}
+}
+func run(path string, euid func() int) error {
+	if euid() != -1 && euid() == 0 {
+		return fmt.Errorf("redlined refuses to run as root")
+	}
+	c, e := app.Load(path)
 	if e != nil {
-		fmt.Fprintln(os.Stderr, "configuration error:", e)
-		os.Exit(2)
+		return fmt.Errorf("configuration error")
 	}
 	s, e := sqlite.Open(c.DatabasePath)
 	if e != nil {
-		fmt.Fprintln(os.Stderr, "database error")
-		os.Exit(1)
+		return fmt.Errorf("database unavailable")
 	}
 	defer s.Close()
 	api := &v1.Server{Runner: engine.Runner{Config: c}, Store: s}
-	server := &http.Server{Addr: c.API.ListenAddress, Handler: api.Handler()}
+	server := &http.Server{Addr: c.API.ListenAddress, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe() }()
 	fmt.Printf("redlined listening on %s\n", c.API.ListenAddress)
-	if e = server.ListenAndServe(); e != nil && e != http.ErrServerClosed {
-		fmt.Fprintln(os.Stderr, "server error")
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if e = server.Shutdown(shutdownCtx); e != nil {
+			return fmt.Errorf("server shutdown failed")
+		}
+		fmt.Println("redlined stopped")
+		return nil
+	case e = <-errCh:
+		if errors.Is(e, http.ErrServerClosed) {
+			return nil
+		}
+		return fmt.Errorf("server failed")
 	}
 }

@@ -19,10 +19,15 @@ type Server struct {
 	Runner engine.Runner
 	Store  *sqlite.Store
 	mu     sync.Mutex
-	events []chan string
+	hub    *eventHub
 }
 
 func (s *Server) Handler() http.Handler {
+	s.mu.Lock()
+	if s.hub == nil {
+		s.hub = newEventHub()
+	}
+	s.mu.Unlock()
 	m := http.NewServeMux()
 	m.HandleFunc("/api/v1/meta", s.meta)
 	m.HandleFunc("/api/v1/scans", s.scans)
@@ -112,13 +117,13 @@ func (s *Server) scans(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodPost) {
 		return
 	}
-	s.notify("started")
-	x, e := s.Runner.ScanAndPersist(r.Context(), s.Store)
+	runner := s.Runner
+	runner.Events = s.hub
+	x, e := runner.ScanAndPersist(r.Context(), s.Store)
 	if e != nil {
 		apiError(w, 500, "scan_failed", "The scan could not be completed.", true)
 		return
 	}
-	s.notify("completed:" + x.ID)
 	write(w, 200, scanDTO(x))
 }
 func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +289,21 @@ func findingsDTO(a []domain.Finding) []FindingDTO {
 	}
 	return out
 }
+
+type EventPayloadDTO struct {
+	ProbeID     string `json:"probe_id,omitempty"`
+	FindingCode string `json:"finding_code,omitempty"`
+	Outcome     string `json:"outcome,omitempty"`
+}
+type EventDTO struct {
+	SchemaVersion string          `json:"event_schema_version"`
+	EventID       string          `json:"event_id"`
+	EventType     string          `json:"event_type"`
+	OccurredAt    string          `json:"occurred_at"`
+	ScanID        string          `json:"scan_id,omitempty"`
+	Payload       EventPayloadDTO `json:"payload"`
+}
+
 func (s *Server) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
 		return
@@ -295,37 +315,24 @@ func (s *Server) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	ch := make(chan string, 8)
-	s.mu.Lock()
-	s.events = append(s.events, ch)
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		for i, v := range s.events {
-			if v == ch {
-				s.events = append(s.events[:i], s.events[i+1:]...)
-				break
-			}
-		}
-		s.mu.Unlock()
-	}()
+	id, ch := s.hub.subscribe()
+	defer s.hub.unsubscribe(id)
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 	for {
 		select {
-		case m := <-ch:
-			_, _ = fmt.Fprintf(w, "event: scan\ndata: %s\n\n", m)
+		case e := <-ch:
+			data, err := json.Marshal(EventDTO{"v1", e.ID, e.Type, e.OccurredAt.UTC().Format(time.RFC3339), e.ScanID, EventPayloadDTO{e.ProbeID, e.FindingCode, e.Outcome}})
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", e.ID, e.Type, data)
+			f.Flush()
+		case <-heartbeat.C:
+			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
 			f.Flush()
 		case <-r.Context().Done():
 			return
-		}
-	}
-}
-func (s *Server) notify(m string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, c := range s.events {
-		select {
-		case c <- m:
-		default:
 		}
 	}
 }

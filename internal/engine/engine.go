@@ -19,7 +19,21 @@ import (
 type Runner struct {
 	Config app.Config
 	Now    func() time.Time
+	Events EventSink
 }
+type Event struct {
+	ID, Type, ScanID              string
+	OccurredAt                    time.Time
+	ProbeID, FindingCode, Outcome string
+}
+type EventSink interface{ Emit(Event) }
+
+func (r Runner) emit(e Event) {
+	if r.Events != nil {
+		r.Events.Emit(e)
+	}
+}
+
 type ScanStore interface {
 	Save(context.Context, domain.Scan) error
 }
@@ -49,6 +63,7 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 		return domain.Scan{}, err
 	}
 	scan := domain.Scan{ID: id, StartedAt: now, Status: "running"}
+	r.emit(Event{ID: id + "-started", Type: "scan.started", ScanID: id, OccurredAt: now})
 	var rpcObs, transportObs, fsObs *domain.Observation
 	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())
 	caps := capabilities.Set{Filesystem: filesystemProvider{r.Config.Bitcoin.DataDirectory}, Clock: capabilities.SystemClock{}}
@@ -65,6 +80,7 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 		d := p.Descriptor()
 		executionID := id + "-" + strings.ReplaceAll(d.ID, "/", "-")
 		started := r.now()
+		r.emit(Event{ID: executionID + "-started", Type: "scan.probe.started", ScanID: id, OccurredAt: started, ProbeID: d.ID})
 		probeCtx, cancel := context.WithTimeout(ctx, d.Timeout)
 		result := p.Collect(probeCtx, caps.Scope(d.Required, d.Optional), id, executionID, started)
 		ctxErr := probeCtx.Err()
@@ -80,6 +96,7 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 			outcome = domain.ExecutionPartial
 		}
 		scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: executionID, ScanID: id, ProbeID: d.ID, ProbeVersion: d.Version, Outcome: outcome, StartedAt: started, FinishedAt: done, DurationMS: done.Sub(started).Milliseconds(), Limitation: result.Reason})
+		r.emit(Event{ID: executionID + "-completed", Type: "scan.probe.completed", ScanID: id, OccurredAt: done, ProbeID: d.ID, Outcome: string(outcome)})
 		declared := map[string]bool{}
 		for _, k := range d.ObservationKinds {
 			declared[k] = true
@@ -117,9 +134,13 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	scan.Findings = append(scan.Findings, evaluation.RPC(id, transportObs, rpcReason, now))
 	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, now)...)
 	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem, now))
+	for _, f := range scan.Findings {
+		r.emit(Event{ID: f.ID + "-created", Type: "scan.finding.created", ScanID: id, OccurredAt: f.EvaluatedAt, FindingCode: f.Code, Outcome: string(f.Status)})
+	}
 	scan.Summary = evaluation.Summary(scan.Findings)
 	scan.FinishedAt = r.now()
 	scan.Status = "completed"
+	r.emit(Event{ID: id + "-completed", Type: "scan.completed", ScanID: id, OccurredAt: scan.FinishedAt, Outcome: scan.Status})
 	return scan, nil
 }
 func (r Runner) now() time.Time {
