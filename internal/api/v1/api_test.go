@@ -373,17 +373,22 @@ func TestEventJSONConformsToSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := EventDTO{SchemaVersion: 1, EventID: "event_1", EventType: "scan.failed", OccurredAt: time.Now().UTC().Format(time.RFC3339), ScanID: "scan_1", Payload: EventPayloadDTO{Outcome: "engine_failed"}}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
+	values := []EventDTO{
+		{SchemaVersion: 1, EventID: "event_1", EventType: "scan.failed", OccurredAt: time.Now().UTC().Format(time.RFC3339), ScanID: "scan_1", Payload: EventPayloadDTO{Outcome: "engine_failed"}},
+		{SchemaVersion: 1, EventID: "event_2", EventType: "scan.diagnosis.created", OccurredAt: time.Now().UTC().Format(time.RFC3339), ScanID: "scan_1", Payload: EventPayloadDTO{DiagnosisCode: "wallet-backend.electrum-protocol-breakpoint", Outcome: "break_point"}},
 	}
-	var document any
-	if err = json.Unmarshal(encoded, &document); err != nil {
-		t.Fatal(err)
-	}
-	if err = schema.Validate(document); err != nil {
-		t.Fatal(err)
+	for _, value := range values {
+		encoded, encodeErr := json.Marshal(value)
+		if encodeErr != nil {
+			t.Fatal(encodeErr)
+		}
+		var document any
+		if err = json.Unmarshal(encoded, &document); err != nil {
+			t.Fatal(err)
+		}
+		if err = schema.Validate(document); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

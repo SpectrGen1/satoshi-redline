@@ -118,7 +118,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 500, "catalog_unavailable", "The compiled probe catalog is unavailable.", false)
 		return
 	}
-	d := MetaDTO{buildinfo.Version, buildinfo.BuildID, 1, "1", 1, []int{1}, []int{1}, []string{"bitcoin_rpc", "filesystem_capacity", "electrum_protocol", "dependency_graph", "diagnoses"}, nil}
+	d := MetaDTO{buildinfo.Version, buildinfo.BuildID, 1, "2", 1, []int{1}, []int{1}, []string{"bitcoin_rpc", "filesystem_capacity", "electrum_protocol", "dependency_graph", "diagnoses"}, nil}
 	for _, p := range c.Probes() {
 		x := p.Descriptor()
 		v := ProbeCatalogDTO{ID: x.ID, Version: x.Version, ScanMode: string(x.Mode), RequiredCapabilities: []string{}, OptionalCapabilities: []string{}, SideEffects: []string{}, ObservationKinds: append([]string{}, x.ObservationKinds...)}

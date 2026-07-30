@@ -13,6 +13,8 @@ Its primary purpose is to answer:
 
 The project is currently in its bootstrap phase. The accepted architecture decisions are under `docs/ADRs/`.
 
+The current pre-release slice supports one manually configured Bitcoin Core or Bitcoin Knots node and one optional manually configured Electrs or Fulcrum backend with an explicit `uses_chain_from` dependency. It does not discover or manage either service.
+
 ## Source of Truth
 
 Before making architectural or cross-cutting changes, read:
@@ -264,6 +266,8 @@ go test ./...
 go test -race ./...
 go vet ./...
 ```
+
+Optional live integration procedures are documented under `docs/live-bitcoin-smoke.md` and `docs/live-electrum-smoke.md`. They must remain explicitly opt-in and must never start or stop user services.
 
 The current release-candidate scope is the manual Bitcoin RPC and configured
 filesystem vertical slice documented in `README.md` and

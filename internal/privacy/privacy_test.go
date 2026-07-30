@@ -1,9 +1,13 @@
 package privacy_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +29,7 @@ func TestCanariesDoNotCrossBoundaries(t *testing.T) {
 	const responseHeader = "CANARY_HEADER_91bb"
 	const rpcError = "CANARY_RPC_ERROR_442a"
 	const endpointUserinfo = "CANARY_USERINFO_73ce"
+	const electrumBanner = "CANARY_ELECTRUM_BANNER_613c"
 	malformedRPC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Unsafe", responseHeader)
 		_, _ = w.Write([]byte(malformedBody + " malformed"))
@@ -34,6 +39,26 @@ func TestCanariesDoNotCrossBoundaries(t *testing.T) {
 		_, _ = w.Write([]byte(`{"result":null,"error":{"code":-1,"message":"` + rpcError + `"},"id":1}`))
 	}))
 	defer errorRPC.Close()
+	electrumListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatal(listenErr)
+	}
+	defer electrumListener.Close()
+	header := make([]byte, 80)
+	header[0] = 1
+	binary.LittleEndian.PutUint32(header[68:72], uint32(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC).Unix()))
+	go func() {
+		connection, acceptErr := electrumListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		reader := bufio.NewReader(connection)
+		_, _ = reader.ReadBytes('\n')
+		_, _ = connection.Write([]byte(`{"jsonrpc":"2.0","result":["Fulcrum ` + electrumBanner + `","1.4.3"],"id":1}` + "\n"))
+		_, _ = reader.ReadBytes('\n')
+		_, _ = connection.Write([]byte(`{"jsonrpc":"2.0","result":{"height":1,"hex":"` + hex.EncodeToString(header) + `"},"id":2}` + "\n"))
+	}()
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "CANARY_PATH_52cc")
 	if e := os.Mkdir(dataDir, 0700); e != nil {
@@ -62,6 +87,19 @@ func TestCanariesDoNotCrossBoundaries(t *testing.T) {
 		}
 		scans = append(scans, scan)
 	}
+	electrumConfig := app.DefaultConfig()
+	electrumConfig.Bitcoin.RPCEndpoint = errorRPC.URL
+	electrumConfig.Bitcoin.CookieFile = cookie
+	electrumConfig.Bitcoin.DataDirectory = dataDir
+	electrumConfig.DatabasePath = dbPath
+	electrumConfig.Electrum.Enabled = true
+	electrumConfig.Electrum.Endpoint = "tcp://" + electrumListener.Addr().String()
+	electrumConfig.Electrum.BitcoinComponentID = "bitcoin.primary"
+	electrumScan, scanErr := (engine.Runner{Config: electrumConfig, Now: now}).ScanAndPersist(context.Background(), store)
+	if scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	scans = append(scans, electrumScan)
 	api := (&apiv1.Server{Store: store}).Handler()
 	var boundary bytes.Buffer
 	for _, scan := range scans {
@@ -70,7 +108,7 @@ func TestCanariesDoNotCrossBoundaries(t *testing.T) {
 			t.Fatal(reportErr)
 		}
 		boundary.Write(report)
-		for _, suffix := range []string{"", "/observations", "/findings"} {
+		for _, suffix := range []string{"", "/observations", "/findings", "/components", "/graph", "/diagnoses"} {
 			rec := httptest.NewRecorder()
 			api.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/scans/"+scan.ID+suffix, nil))
 			boundary.Write(rec.Body.Bytes())
@@ -79,7 +117,7 @@ func TestCanariesDoNotCrossBoundaries(t *testing.T) {
 	if e = store.Close(); e != nil {
 		t.Fatal(e)
 	}
-	canaries := []string{cookieValue, malformedBody, responseHeader, rpcError, endpointUserinfo, "CANARY_PATH_52cc"}
+	canaries := []string{cookieValue, malformedBody, responseHeader, rpcError, endpointUserinfo, electrumBanner, "CANARY_PATH_52cc"}
 	for _, canary := range canaries {
 		if bytes.Contains(boundary.Bytes(), []byte(canary)) {
 			t.Fatalf("canary crossed API/report boundary: %s", canary)

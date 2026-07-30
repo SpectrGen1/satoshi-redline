@@ -207,6 +207,27 @@ func TestEndpointValidationRejectsUnsafeForms(t *testing.T) {
 			t.Fatal("endpoint userinfo leaked")
 		}
 	}
+	client, err := New("ssl://electrum.example:50002", time.Second)
+	if err != nil || client.serverName != "electrum.example" || client.kind != domain.ElectrumTransportTLS {
+		t.Fatalf("TLS destination was not bound correctly: %+v %v", client, err)
+	}
+}
+
+func TestAmbientProxyVariablesAreIgnored(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("ALL_PROXY", "socks5://127.0.0.1:1")
+	endpoint := fakeEndpoint(t, func(connection net.Conn) {
+		reader := bufio.NewReader(connection)
+		_, _ = readRequest(reader)
+		writeResponse(connection, 1, `["electrs","1.4"]`)
+		_, _ = readRequest(reader)
+		writeResponse(connection, 2, fmt.Sprintf(`{"height":1,"hex":%q}`, headerHex(1_800_000_000)))
+	})
+	client, _ := New(endpoint, time.Second)
+	if _, reason := client.Collect(context.Background()); reason != "" {
+		t.Fatalf("ambient proxy affected direct connection: %s", reason)
+	}
 }
 
 func TestTipParsingRejectsInvalidHeaders(t *testing.T) {

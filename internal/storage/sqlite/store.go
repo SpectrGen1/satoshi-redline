@@ -347,27 +347,32 @@ func (s *Store) loadDiagnoses(ctx context.Context, scanID string) ([]domain.Diag
 		if diagnosis.DiagnosedAt, err = parse(diagnosedAt); err != nil {
 			return nil, err
 		}
-		if diagnosis.ComponentIDs, err = s.loadDiagnosisStrings(ctx, `SELECT component_id FROM diagnosis_components WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
+		if diagnosis.ComponentIDs, err = s.loadDiagnosisOwnedStrings(ctx, `SELECT scan_id,component_id FROM diagnosis_components WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID, diagnosis.ScanID); err != nil {
 			return nil, err
 		}
-		if diagnosis.FindingIDs, err = s.loadDiagnosisStrings(ctx, `SELECT finding_id FROM diagnosis_findings WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
+		if diagnosis.FindingIDs, err = s.loadDiagnosisOwnedStrings(ctx, `SELECT scan_id,finding_id FROM diagnosis_findings WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID, diagnosis.ScanID); err != nil {
 			return nil, err
 		}
-		if diagnosis.BlockingUnknownFindingIDs, err = s.loadDiagnosisStrings(ctx, `SELECT finding_id FROM diagnosis_blocking_unknowns WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
+		if diagnosis.BlockingUnknownFindingIDs, err = s.loadDiagnosisOwnedStrings(ctx, `SELECT scan_id,finding_id FROM diagnosis_blocking_unknowns WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID, diagnosis.ScanID); err != nil {
 			return nil, err
 		}
 		if diagnosis.PlausibleAlternativeCodes, err = s.loadDiagnosisStrings(ctx, `SELECT alternative_code FROM diagnosis_alternatives WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
 			return nil, err
 		}
-		evidenceRows, queryErr := s.db.QueryContext(ctx, `SELECT observation_id,observation_kind,evidence_role FROM diagnosis_evidence WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID)
+		evidenceRows, queryErr := s.db.QueryContext(ctx, `SELECT scan_id,observation_id,observation_kind,evidence_role FROM diagnosis_evidence WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID)
 		if queryErr != nil {
 			return nil, queryErr
 		}
 		for evidenceRows.Next() {
 			var evidence domain.EvidenceRef
-			if err = evidenceRows.Scan(&evidence.ObservationID, &evidence.ObservationKind, &evidence.Role); err != nil {
+			var evidenceScanID string
+			if err = evidenceRows.Scan(&evidenceScanID, &evidence.ObservationID, &evidence.ObservationKind, &evidence.Role); err != nil {
 				evidenceRows.Close()
 				return nil, err
+			}
+			if evidenceScanID != diagnosis.ScanID {
+				evidenceRows.Close()
+				return nil, fmt.Errorf("diagnosis evidence belongs to another scan")
 			}
 			diagnosis.Evidence = append(diagnosis.Evidence, evidence)
 		}
@@ -382,6 +387,29 @@ func (s *Store) loadDiagnoses(ctx context.Context, scanID string) ([]domain.Diag
 		return nil, err
 	}
 	return diagnoses, nil
+}
+
+func (s *Store) loadDiagnosisOwnedStrings(ctx context.Context, query, diagnosisID, scanID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, diagnosisID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var values []string
+	for rows.Next() {
+		var owner, value string
+		if err = rows.Scan(&owner, &value); err != nil {
+			return nil, err
+		}
+		if owner != scanID {
+			return nil, fmt.Errorf("diagnosis reference belongs to another scan")
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 func (s *Store) loadDiagnosisStrings(ctx context.Context, query, diagnosisID string) ([]string, error) {

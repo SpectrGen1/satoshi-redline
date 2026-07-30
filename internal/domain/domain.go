@@ -273,6 +273,13 @@ func Reason(code UnknownReasonCode) UnknownReason {
 		r.Stage = StageNormalization
 		r.Retryability = NotRetryable
 		r.Resolution = ResolutionUpdateRedline
+	case UnsupportedProtocol:
+		r.Stage = StageNormalization
+		r.Retryability = NotRetryable
+		r.Resolution = ResolutionUpdateRedline
+	case TLSFailure:
+		r.Retryability = ConditionallyRetryable
+		r.Resolution = ResolutionManualInspection
 	case StaleEvidence, TemporallyInconsistent, RequiredObservationMissing:
 		r.Stage = StageEvaluation
 		r.Resolution = ResolutionManualInspection
@@ -623,7 +630,7 @@ func (f Finding) Validate() error {
 		return fmt.Errorf("unknown finding lacks structured evidence")
 	}
 	for _, reason := range f.Reasons {
-		if reason.Code == "" || reason.Stage == "" || reason.Retryability == "" || reason.Resolution == "" {
+		if !registeredUnknownReason(reason.Code) || reason.Stage == "" || reason.Retryability == "" || reason.Resolution == "" {
 			return fmt.Errorf("unknown reason is incomplete")
 		}
 	}
@@ -639,6 +646,18 @@ func (f Finding) Validate() error {
 		return fmt.Errorf("assessed finding contains unknown evidence")
 	}
 	return nil
+}
+
+func registeredUnknownReason(code UnknownReasonCode) bool {
+	switch code {
+	case SecretReferenceUnavailable, PermissionDenied, NotConfigured, Timeout, Cancelled,
+		ProtocolError, InvalidResponse, UnsupportedSchema, StaleEvidence, TemporallyInconsistent,
+		RequiredObservationMissing, EvaluationInternalError, AuthenticationRejected,
+		ConnectionRefused, RouteUnreachable, RPCError, TLSFailure, UnsupportedProtocol:
+		return true
+	default:
+		return false
+	}
 }
 
 type CoverageSummary struct {

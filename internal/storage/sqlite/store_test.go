@@ -169,6 +169,67 @@ func TestGetRejectsMismatchedScanReference(t *testing.T) {
 	}
 }
 
+func diagnosisCorruptionFixture(t *testing.T, corruptionSQL string) *Store {
+	t.Helper()
+	store, err := Open(filepath.Join(t.TempDir(), "diagnosis-corrupt.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	execution := domain.ProbeExecution{ID: "execution", ScanID: "scan", ProbeID: "test/v1", ProbeVersion: "1.0.0", Outcome: domain.ExecutionCompleted, StartedAt: now, FinishedAt: now}
+	observation := domain.Observation{ID: "observation", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.RPCTransportResult{Reached: true, Authentication: domain.AuthenticationAccepted, Category: "valid_json_rpc_response"}}
+	pass := domain.Finding{ID: "pass", ScanID: "scan", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.primary", Status: domain.Pass, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: domain.Required, Evidence: []domain.EvidenceRef{{ObservationID: "observation", ObservationKind: "bitcoin.rpc.transport", Role: domain.EvidenceSupports}}}
+	unknown := domain.Finding{ID: "unknown", ScanID: "scan", Code: "electrum.chain.sync-lag", ComponentID: "electrum.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: domain.Required, Reasons: []domain.UnknownReason{domain.Reason(domain.RequiredObservationMissing)}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: "electrum.chain.tip", Problem: domain.EvidenceMissing, ReasonCode: domain.RequiredObservationMissing}}}
+	diagnosis := domain.Diagnosis{ID: "diagnosis", ScanID: "scan", Code: "wallet-backend.electrum-diagnosis-inconclusive", Classification: domain.DiagnosisInconclusive, Confidence: domain.ConfidenceLow, SummaryKey: "diagnosis.wallet-backend.electrum-diagnosis-inconclusive", ComponentIDs: []string{"bitcoin.primary", "electrum.primary"}, FindingIDs: []string{"pass", "unknown"}, Evidence: []domain.EvidenceRef{{ObservationID: "observation", ObservationKind: "bitcoin.rpc.transport", Role: domain.EvidenceContextualizes}}, BlockingUnknownFindingIDs: []string{"unknown"}, PlausibleAlternativeCodes: []string{"wallet-backend.electrum-protocol-breakpoint"}, CorrelationRuleID: "correlation.test", CorrelationRuleVersion: "1.0.0", DiagnosedAt: now}
+	scan := domain.Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Components: domain.BaseComponents(true), DependencyEdges: []domain.DependencyEdge{{ID: "edge", SourceComponentID: "electrum.primary", DestinationComponentID: "bitcoin.primary", Relationship: domain.UsesChainFrom, Provenance: domain.ProvenanceConfiguration, Confidence: domain.ConfidenceHigh, RecordedAt: now}}, Executions: []domain.ProbeExecution{execution}, Observations: []domain.Observation{observation}, Findings: []domain.Finding{pass, unknown}, Diagnoses: []domain.Diagnosis{diagnosis}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.NoConclusion, Coverage: domain.CoverageSummary{State: domain.Partial, ApplicableRequired: 2, AssessedRequired: 1, UnknownRequired: 1}}}
+	if err = store.Save(context.Background(), scan); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := store.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = connection.ExecContext(context.Background(), `PRAGMA foreign_keys=OFF`); err != nil {
+		connection.Close()
+		t.Fatal(err)
+	}
+	if _, err = connection.ExecContext(context.Background(), corruptionSQL); err != nil {
+		connection.Close()
+		t.Fatal(err)
+	}
+	if err = connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func TestGetRejectsCorruptedDiagnosisReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+	}{
+		{"missing component", `UPDATE diagnosis_components SET component_id='missing' WHERE ordinal=0`},
+		{"missing finding", `UPDATE diagnosis_findings SET finding_id='missing' WHERE ordinal=0`},
+		{"missing observation", `UPDATE diagnosis_evidence SET observation_id='missing'`},
+		{"evidence kind mismatch", `UPDATE diagnosis_evidence SET observation_kind='bitcoin.chain.state'`},
+		{"blocking finding missing", `UPDATE diagnosis_blocking_unknowns SET finding_id='missing'`},
+		{"blocking finding assessed", `UPDATE diagnosis_blocking_unknowns SET finding_id='pass'`},
+		{"component scan mismatch", `UPDATE diagnosis_components SET scan_id='other' WHERE ordinal=0`},
+		{"finding scan mismatch", `UPDATE diagnosis_findings SET scan_id='other' WHERE ordinal=0`},
+		{"observation scan mismatch", `UPDATE diagnosis_evidence SET scan_id='other'`},
+		{"blocking scan mismatch", `UPDATE diagnosis_blocking_unknowns SET scan_id='other'`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := diagnosisCorruptionFixture(t, test.sql)
+			if _, err := store.Get(context.Background(), "scan"); err == nil {
+				t.Fatal("corrupted diagnosis graph loaded")
+			}
+		})
+	}
+}
+
 func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "roundtrip.db")
 	s, e := Open(path)

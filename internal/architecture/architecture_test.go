@@ -68,7 +68,8 @@ func TestProbeAndEvaluatorImportBoundaries(t *testing.T) {
 		switch {
 		case strings.Contains(path, filepath.Join("internal", "probes")):
 			forbidden = probeForbidden
-		case strings.Contains(path, filepath.Join("internal", "evaluation")):
+		case strings.Contains(path, filepath.Join("internal", "evaluation")),
+			strings.Contains(path, filepath.Join("internal", "correlation")):
 			forbidden = evaluatorForbidden
 		default:
 			continue
@@ -113,7 +114,7 @@ func TestProductionDoesNotLoadPluginsOrReadClockInEvaluators(t *testing.T) {
 			if owner != nil && owner.Name == "plugin" && selector.Sel.Name == "Open" {
 				t.Errorf("%s calls plugin.Open", path)
 			}
-			if strings.Contains(path, filepath.Join("internal", "evaluation")) && owner != nil && owner.Name == "time" && selector.Sel.Name == "Now" {
+			if (strings.Contains(path, filepath.Join("internal", "evaluation")) || strings.Contains(path, filepath.Join("internal", "correlation"))) && owner != nil && owner.Name == "time" && selector.Sel.Name == "Now" {
 				t.Errorf("%s reads the clock directly", path)
 			}
 			return true
@@ -172,8 +173,8 @@ func TestMigrationsContainNoGenericRawDataColumns(t *testing.T) {
 
 func TestAPIAndReportUseExplicitDTOConstruction(t *testing.T) {
 	required := map[string]map[string]bool{
-		filepath.Join("internal", "api", "v1"):     {"ObservationDTO": false, "FindingDTO": false},
-		filepath.Join("internal", "reports", "v1"): {"ObservationDTO": false, "FindingDTO": false, "Report": false},
+		filepath.Join("internal", "api", "v1"):     {"ComponentDTO": false, "ObservationDTO": false, "FindingDTO": false, "DiagnosisDTO": false},
+		filepath.Join("internal", "reports", "v1"): {"ComponentDTO": false, "ObservationDTO": false, "FindingDTO": false, "DiagnosisDTO": false, "Report": false},
 	}
 	for path, file := range productionGoFiles(t) {
 		for directory, names := range required {

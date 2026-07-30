@@ -1,7 +1,11 @@
 package engine
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +85,95 @@ func TestScanSynchronizedHealthy(t *testing.T) {
 				t.Fatal("missing rpc transport value")
 			}
 		}
+	}
+}
+
+func TestCompleteBitcoinElectrumSlice(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	header := make([]byte, 80)
+	header[0] = 1
+	binary.LittleEndian.PutUint32(header[68:72], uint32(now.Unix()))
+	first := sha256.Sum256(header)
+	second := sha256.Sum256(first[:])
+	for left, right := 0, len(second)-1; left < right; left, right = left+1, right-1 {
+		second[left], second[right] = second[right], second[left]
+	}
+	blockHash := hex.EncodeToString(second[:])
+
+	bitcoin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string `json:"method"`
+		}
+		if json.NewDecoder(r.Body).Decode(&request) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		switch request.Method {
+		case "getblockchaininfo":
+			_, _ = fmt.Fprintf(w, `{"result":{"blocks":100,"headers":100,"verificationprogress":1,"initialblockdownload":false,"time":%d},"error":null,"id":1}`, now.Unix())
+		case "getblockhash":
+			_, _ = fmt.Fprintf(w, `{"result":%q,"error":null,"id":1}`, blockHash)
+		default:
+			_, _ = w.Write([]byte(`{"result":null,"error":{"code":-32601},"id":1}`))
+		}
+	}))
+	defer bitcoin.Close()
+	electrumListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer electrumListener.Close()
+	go func() {
+		connection, acceptErr := electrumListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		reader := bufio.NewReader(connection)
+		_, _ = reader.ReadBytes('\n')
+		_, _ = connection.Write([]byte(`{"jsonrpc":"2.0","result":["Fulcrum CANARY_BANNER","1.4.3"],"id":1}` + "\n"))
+		_, _ = reader.ReadBytes('\n')
+		_, _ = fmt.Fprintf(connection, `{"jsonrpc":"2.0","result":{"height":100,"hex":%q},"id":2}`+"\n", hex.EncodeToString(header))
+	}()
+
+	root := t.TempDir()
+	cookie := filepath.Join(root, "cookie")
+	if err = os.WriteFile(cookie, []byte("u:p"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := app.DefaultConfig()
+	config.Bitcoin = app.BitcoinConfig{RPCEndpoint: bitcoin.URL, CookieFile: cookie, DataDirectory: root}
+	config.Electrum.Enabled = true
+	config.Electrum.Endpoint = "tcp://" + electrumListener.Addr().String()
+	config.Electrum.BitcoinComponentID = "bitcoin.primary"
+	scan, err := (Runner{Config: config, Now: func() time.Time { return now }}).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = scan.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if scan.Summary.Health != domain.Healthy || scan.Summary.Coverage.State != domain.Complete || len(scan.Diagnoses) != 0 {
+		t.Fatalf("unexpected complete slice: summary=%+v diagnoses=%+v", scan.Summary, scan.Diagnoses)
+	}
+	expected := map[string]bool{
+		"electrum.protocol.reachable": false, "electrum.protocol.compatible": false,
+		"electrum.chain.tip-freshness": false, "electrum.chain.sync-lag": false,
+		"electrum.chain.matches-bitcoin": false,
+	}
+	for _, finding := range scan.Findings {
+		if _, ok := expected[finding.Code]; ok {
+			expected[finding.Code] = finding.Status == domain.Pass && len(finding.Evidence) > 0
+		}
+	}
+	for code, passed := range expected {
+		if !passed {
+			t.Fatalf("%s did not produce a supported pass", code)
+		}
+	}
+	forbidden := fmt.Sprintf("%+v", scan)
+	if strings.Contains(forbidden, "CANARY_BANNER") || strings.Contains(forbidden, config.Electrum.Endpoint) {
+		t.Fatal("Electrum configuration or banner entered normalized scan")
 	}
 }
 func TestMissingEvidenceIsNotPass(t *testing.T) {

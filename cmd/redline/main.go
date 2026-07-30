@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
+	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/engine"
 	v1 "github.com/satoshi-redline/redline/internal/reports/v1"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
@@ -63,19 +64,8 @@ func run(argv []string, out, errOut io.Writer) int {
 			}
 			return 0
 		}
-		_, e = fmt.Fprintf(out, "Scan ID: %s\nHealth: %s\nRequired coverage: %s (%d/%d assessed)\n", x.ID, x.Summary.Health, x.Summary.Coverage.State, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.ApplicableRequired)
-		if e != nil {
+		if e = writeHumanScan(out, x); e != nil {
 			return 1
-		}
-		if len(x.Diagnoses) > 0 {
-			if _, e = fmt.Fprintln(out, "Diagnoses:"); e != nil {
-				return 1
-			}
-			for _, diagnosis := range x.Diagnoses {
-				if _, e = fmt.Fprintf(out, "- %s (%s)\n", diagnosis.Code, diagnosis.Classification); e != nil {
-					return 1
-				}
-			}
 		}
 		return 0
 	case "report":
@@ -107,4 +97,22 @@ func run(argv []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "invalid command")
 		return 2
 	}
+}
+
+func writeHumanScan(out io.Writer, scan domain.Scan) error {
+	if _, err := fmt.Fprintf(out, "Scan ID: %s\nHealth: %s\nRequired coverage: %s (%d/%d assessed)\n", scan.ID, scan.Summary.Health, scan.Summary.Coverage.State, scan.Summary.Coverage.AssessedRequired, scan.Summary.Coverage.ApplicableRequired); err != nil {
+		return err
+	}
+	if len(scan.Diagnoses) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(out, "Diagnoses:"); err != nil {
+		return err
+	}
+	for _, diagnosis := range scan.Diagnoses {
+		if _, err := fmt.Fprintf(out, "- %s (%s)\n", diagnosis.Code, diagnosis.Classification); err != nil {
+			return err
+		}
+	}
+	return nil
 }

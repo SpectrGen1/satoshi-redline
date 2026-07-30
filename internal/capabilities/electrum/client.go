@@ -118,6 +118,11 @@ func (c *Client) Collect(ctx context.Context) (Result, domain.UnknownReasonCode)
 	if c.kind == domain.ElectrumTransportTLS {
 		tlsConnection := tls.Client(raw, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: c.serverName})
 		if err = tlsConnection.HandshakeContext(ctx); err != nil {
+			if ctx.Err() != nil {
+				reason := networkReason(ctx, err)
+				result.Transport.Category = string(reason)
+				return result, reason
+			}
 			result.Transport.TLSVerification = domain.TLSVerificationFailed
 			result.Transport.Category = string(domain.TLSFailure)
 			return result, domain.TLSFailure
@@ -191,8 +196,12 @@ func exchange(ctx context.Context, connection net.Conn, reader *bufio.Reader, ti
 	if err = connection.SetWriteDeadline(operationDeadline(ctx, timeout)); err != nil {
 		return nil, domain.ProtocolError
 	}
-	if _, err = connection.Write(body); err != nil {
+	written, err := connection.Write(body)
+	if err != nil {
 		return nil, networkReason(ctx, err)
+	}
+	if written != len(body) {
+		return nil, domain.ProtocolError
 	}
 	for {
 		if err = connection.SetReadDeadline(operationDeadline(ctx, timeout)); err != nil {
