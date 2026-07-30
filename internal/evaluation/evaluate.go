@@ -8,13 +8,17 @@ import (
 )
 
 func finding(scan, code string, status domain.Status, reason domain.UnknownReason, provenance string, required bool) domain.Finding {
-	f := domain.Finding{ID: scan + "-" + code, ScanID: scan, Code: code, ComponentID: "bitcoin.primary", Status: status, Applicability: domain.Applicable, Evaluator: "redline.mvp/v1", Provenance: provenance, EvaluatedAt: time.Now().UTC(), Required: required}
+	f := domain.Finding{ID: scan + "-" + code, ScanID: scan, Code: code, ComponentID: "bitcoin.primary", Status: status, Applicability: domain.Applicable, Evaluator: "redline.mvp/v1", EvaluatorVersion: "v1", Provenance: provenance, EvaluatedAt: time.Now().UTC(), Required: required, Role: domain.Required}
 	if reason != "" {
 		f.Reasons = []domain.UnknownReason{reason}
+		f.MissingEvidence = []domain.MissingEvidence{{Kind: "required", Reason: reason}}
 	}
 	return f
 }
 func RPC(scan string, reachable *bool, reason domain.UnknownReason) domain.Finding {
+	if reason == domain.AuthenticationRejected || reason == domain.InvalidResponse || reason == domain.RPCError {
+		return finding(scan, "bitcoin.rpc.reachable", domain.Pass, "", "http endpoint reached", true)
+	}
 	if reason != "" {
 		return finding(scan, "bitcoin.rpc.reachable", domain.Unknown, reason, "", true)
 	}

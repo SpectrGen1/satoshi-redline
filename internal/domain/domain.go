@@ -60,6 +60,10 @@ const (
 	StaleEvidence              UnknownReason = "evidence.stale"
 	RequiredObservationMissing UnknownReason = "evidence.required_observation_missing"
 	EvaluationInternalError    UnknownReason = "evaluation.internal_error"
+	AuthenticationRejected     UnknownReason = "access.authentication_rejected"
+	ConnectionRefused          UnknownReason = "collection.connection_refused"
+	RouteUnreachable           UnknownReason = "collection.route_unreachable"
+	RPCError                   UnknownReason = "collection.rpc_error"
 )
 
 type Severity string

@@ -9,6 +9,7 @@ import (
 	"github.com/satoshi-redline/redline/internal/domain"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -31,6 +32,10 @@ func New(endpoint, cookieFile, cookieEnv string, timeout time.Duration) (*Client
 	if endpoint == "" {
 		return nil, domain.NotConfigured
 	}
+	u, parseErr := url.Parse(endpoint)
+	if parseErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return nil, domain.NotConfigured
+	}
 	var cookie string
 	var err error
 	if cookieFile != "" {
@@ -48,7 +53,8 @@ func New(endpoint, cookieFile, cookieEnv string, timeout time.Duration) (*Client
 	if err != nil || !strings.Contains(cookie, ":") {
 		return nil, domain.SecretReferenceUnavailable
 	}
-	return &Client{endpoint, cookie, &http.Client{Timeout: timeout}}, ""
+	transport := &http.Transport{Proxy: nil, DisableCompression: true}
+	return &Client{endpoint, cookie, &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, ""
 }
 func (c *Client) Chain(ctx context.Context) (ChainInfo, domain.UnknownReason, bool) {
 	var result struct {
@@ -89,7 +95,7 @@ func (c *Client) call(ctx context.Context, method string, into any) (json.RawMes
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return nil, domain.SecretReferenceUnavailable, false
+		return nil, domain.AuthenticationRejected, true
 	}
 	limited := io.LimitReader(resp.Body, maxResponse+1)
 	raw, e := io.ReadAll(limited)
