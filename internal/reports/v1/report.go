@@ -3,7 +3,9 @@ package v1
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/satoshi-redline/redline/internal/buildinfo"
 	"github.com/satoshi-redline/redline/internal/domain"
+	reportschema "github.com/satoshi-redline/redline/schemas/reports/v1"
 	"time"
 )
 
@@ -102,25 +104,32 @@ type MissingDTO struct {
 	ReasonCode      string `json:"reason_code"`
 }
 type FindingDTO struct {
-	ID               string            `json:"id"`
-	Code             string            `json:"code"`
-	ComponentID      string            `json:"component_id"`
-	Status           string            `json:"status"`
-	Applicability    string            `json:"applicability"`
-	Severity         string            `json:"severity"`
-	Confidence       string            `json:"confidence"`
-	EvaluatorID      string            `json:"evaluator_id"`
-	EvaluatorVersion string            `json:"evaluator_version"`
-	EvaluatedAt      string            `json:"evaluated_at"`
-	CoverageRole     string            `json:"coverage_role"`
-	Reasons          []ReasonDTO       `json:"unknown_reasons"`
-	Evidence         []EvidenceDTO     `json:"evidence"`
-	Missing          []MissingDTO      `json:"missing_evidence"`
-	Thresholds       domain.Thresholds `json:"thresholds"`
+	ID               string        `json:"id"`
+	Code             string        `json:"code"`
+	ComponentID      string        `json:"component_id"`
+	Status           string        `json:"status"`
+	Applicability    string        `json:"applicability"`
+	Severity         string        `json:"severity"`
+	Confidence       string        `json:"confidence"`
+	EvaluatorID      string        `json:"evaluator_id"`
+	EvaluatorVersion string        `json:"evaluator_version"`
+	EvaluatedAt      string        `json:"evaluated_at"`
+	CoverageRole     string        `json:"coverage_role"`
+	Reasons          []ReasonDTO   `json:"unknown_reasons"`
+	Evidence         []EvidenceDTO `json:"evidence"`
+	Missing          []MissingDTO  `json:"missing_evidence"`
+	Thresholds       ThresholdDTO  `json:"thresholds"`
+}
+type ThresholdDTO struct {
+	MaxTipAgeSeconds        int64   `json:"max_tip_age_seconds"`
+	MinVerificationProgress float64 `json:"min_verification_progress"`
+	MaxHeaderLag            int64   `json:"max_header_lag"`
+	WarningAvailablePercent float64 `json:"warning_available_percent"`
+	FailureAvailablePercent float64 `json:"failure_available_percent"`
 }
 
 func FromDomain(x domain.Scan) Report {
-	r := Report{Format: "satoshi-redline-report", SchemaID: "urn:satoshi-redline:schema:report:v1", FormatVersion: 1, ReportID: "report_" + x.ID, GeneratedAt: x.FinishedAt.UTC().Format(time.RFC3339), Producer: Producer{"SATOSHI//REDLINE", "0.1.0", "development"}, Privacy: Privacy{"shareable", true}, Scan: ScanDTO{x.ID, x.StartedAt.UTC().Format(time.RFC3339), x.FinishedAt.UTC().Format(time.RFC3339), x.Status, string(x.Summary.Health)}, Coverage: CoverageDTO{string(x.Summary.Coverage.State), x.Summary.Coverage.ApplicableRequired, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.UnknownRequired}}
+	r := Report{Format: "satoshi-redline-report", SchemaID: "urn:satoshi-redline:schema:report:v1", FormatVersion: 1, ReportID: "report_" + x.ID, GeneratedAt: x.FinishedAt.UTC().Format(time.RFC3339), Producer: Producer{buildinfo.ProductName, buildinfo.Version, buildinfo.BuildID}, Privacy: Privacy{"shareable", true}, Scan: ScanDTO{x.ID, x.StartedAt.UTC().Format(time.RFC3339), x.FinishedAt.UTC().Format(time.RFC3339), x.Status, string(x.Summary.Health)}, Coverage: CoverageDTO{string(x.Summary.Coverage.State), x.Summary.Coverage.ApplicableRequired, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.UnknownRequired}}
 	for _, p := range x.Executions {
 		r.ProbeExecutions = append(r.ProbeExecutions, ExecutionDTO{p.ID, p.ProbeID, p.ProbeVersion, string(p.Outcome), p.StartedAt.UTC().Format(time.RFC3339), p.FinishedAt.UTC().Format(time.RFC3339), p.DurationMS, string(p.Limitation)})
 	}
@@ -137,7 +146,7 @@ func FromDomain(x domain.Scan) Report {
 		r.Observations = append(r.Observations, d)
 	}
 	for _, f := range x.Findings {
-		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Thresholds: f.Thresholds}
+		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Thresholds: ThresholdDTO{f.Thresholds.MaxTipAgeSeconds, f.Thresholds.MinVerificationProgress, f.Thresholds.MaxHeaderLag, f.Thresholds.WarningAvailablePercent, f.Thresholds.FailureAvailablePercent}}
 		for _, v := range f.Reasons {
 			d.Reasons = append(d.Reasons, ReasonDTO{string(v.Code), string(v.Stage), string(v.Retryability), string(v.Resolution)})
 		}
@@ -152,6 +161,9 @@ func FromDomain(x domain.Scan) Report {
 	return r
 }
 func Validate(r Report) error {
+	if len(reportschema.Schema) == 0 {
+		return fmt.Errorf("report schema unavailable")
+	}
 	if r.Format != "satoshi-redline-report" || r.SchemaID != "urn:satoshi-redline:schema:report:v1" || r.FormatVersion != 1 {
 		return fmt.Errorf("invalid report envelope")
 	}
