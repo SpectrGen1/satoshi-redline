@@ -248,6 +248,14 @@ func (s *Store) loadObservations(ctx context.Context, id string) ([]domain.Obser
 			v.ReadOnly = ro != 0
 			v.MountPresent = mp != 0
 			o.Value = v
+		case "system.clock.current":
+			var current string
+			e = s.db.QueryRowContext(ctx, `SELECT "current_time" FROM observation_clock_state WHERE observation_id=?`, o.ID).Scan(&current)
+			var v domain.ClockState
+			if e == nil {
+				v.Current, e = parse(current)
+			}
+			o.Value = v
 		default:
 			return nil, fmt.Errorf("unsupported observation kind")
 		}
