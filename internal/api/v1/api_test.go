@@ -118,7 +118,7 @@ func TestActualResponsesConformToOpenAPI(t *testing.T) {
 	if e = json.Unmarshal(created.Body.Bytes(), &scan); e != nil {
 		t.Fatal(e)
 	}
-	for _, suffix := range []string{"", "/observations", "/findings"} {
+	for _, suffix := range []string{"", "/observations", "/findings", "/components", "/graph", "/diagnoses"} {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/scans/"+scan.ID+suffix, nil)
 		rec := httptest.NewRecorder()
 		server.ServeHTTP(rec, req)
@@ -156,22 +156,27 @@ func apiContractScan() domain.Scan {
 		{ID: "chain", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.BitcoinChainState{Blocks: 1, Headers: 1, VerificationProgress: 1, TipTime: now}},
 		{ID: "filesystem", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary", Kind: "filesystem.capacity", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "filesystem.stat/v1", ProviderID: "test", Sensitivity: "none", Value: domain.FilesystemCapacity{TotalBytes: 10, AvailableBytes: 5, MountPresent: true}},
 		{ID: "clock", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "system.local", Kind: "system.clock.current", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "clock.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.ClockState{Current: now}},
+		{ID: "hash", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.block-hash", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.BitcoinBlockHash{Height: 1, BlockHash: "0011111111111111111111111111111111111111111111111111111111111111"}},
+		{ID: "electrum-transport", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "electrum.primary", Kind: "electrum.protocol.transport", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "electrum.protocol.read/v1", ProviderID: "test", Sensitivity: "local_sensitive", Value: domain.ElectrumProtocolTransport{Reached: true, Transport: domain.ElectrumTransportTCP, TLSVerification: domain.TLSNotApplicable, ProtocolNegotiation: domain.ProtocolAccepted, Category: "valid_protocol_response"}},
+		{ID: "electrum-identity", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "electrum.primary", Kind: "electrum.server.identity", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "electrum.protocol.read/v1", ProviderID: "test", Sensitivity: "local_sensitive", Value: domain.ElectrumServerIdentity{ImplementationFamily: domain.ElectrumFulcrum, ProtocolVersion: "1.4.3"}},
+		{ID: "electrum-tip", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "electrum.primary", Kind: "electrum.chain.tip", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "electrum.protocol.read/v1", ProviderID: "test", Sensitivity: "local_sensitive", Value: domain.ElectrumChainTip{Height: 1, BlockHash: "0011111111111111111111111111111111111111111111111111111111111111", HeaderTime: now}},
 	}
 	assessed := domain.Finding{ID: "assessed", ScanID: "scan", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.primary", Status: domain.Pass, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: domain.Required, Evidence: []domain.EvidenceRef{{ObservationID: "rpc", ObservationKind: "bitcoin.rpc.transport", Role: domain.EvidenceSupports}}}
 	unknown := domain.Finding{ID: "unknown", ScanID: "scan", Code: "bitcoin.chain.synchronized", ComponentID: "bitcoin.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: domain.Required, Reasons: []domain.UnknownReason{domain.Reason(domain.StaleEvidence)}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: "bitcoin.chain.state", Problem: domain.EvidenceStale, ReasonCode: domain.StaleEvidence}}}
-	return domain.Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Components: domain.BaseComponents(false), Executions: []domain.ProbeExecution{execution}, Observations: observations, Findings: []domain.Finding{assessed, unknown}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.Healthy, Coverage: domain.CoverageSummary{State: domain.Partial, ApplicableRequired: 2, AssessedRequired: 1, UnknownRequired: 1}}}
+	diagnosis := domain.Diagnosis{ID: "diagnosis", ScanID: "scan", Code: "wallet-backend.electrum-diagnosis-inconclusive", Classification: domain.DiagnosisInconclusive, Confidence: domain.ConfidenceLow, SummaryKey: "diagnosis.wallet-backend.electrum-diagnosis-inconclusive", ComponentIDs: []string{"bitcoin.primary", "electrum.primary"}, FindingIDs: []string{"assessed", "unknown"}, Evidence: []domain.EvidenceRef{{ObservationID: "rpc", ObservationKind: "bitcoin.rpc.transport", Role: domain.EvidenceContextualizes}}, BlockingUnknownFindingIDs: []string{"unknown"}, PlausibleAlternativeCodes: []string{"wallet-backend.electrum-protocol-breakpoint"}, CorrelationRuleID: "correlation.test", CorrelationRuleVersion: "1.0.0", DiagnosedAt: now}
+	return domain.Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Components: domain.BaseComponents(true), DependencyEdges: []domain.DependencyEdge{{ID: "edge", SourceComponentID: "electrum.primary", DestinationComponentID: "bitcoin.primary", Relationship: domain.UsesChainFrom, Provenance: domain.ProvenanceConfiguration, Confidence: domain.ConfidenceHigh, RecordedAt: now}}, Executions: []domain.ProbeExecution{execution}, Observations: observations, Findings: []domain.Finding{assessed, unknown}, Diagnoses: []domain.Diagnosis{diagnosis}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.Healthy, Coverage: domain.CoverageSummary{State: domain.Partial, ApplicableRequired: 2, AssessedRequired: 1, UnknownRequired: 1}}}
 }
 
 func TestAPIContractCoversTypedVariantsAndErrors(t *testing.T) {
 	scan := apiContractScan()
 	handler := (&Server{Runner: engine.Runner{Config: app.DefaultConfig()}, Store: &fakeStore{scan: scan}}).Handler()
-	for _, path := range []string{"/api/v1/scans/scan", "/api/v1/scans/scan/observations", "/api/v1/scans/scan/findings"} {
+	for _, path := range []string{"/api/v1/scans/scan", "/api/v1/scans/scan/observations", "/api/v1/scans/scan/findings", "/api/v1/scans/scan/components", "/api/v1/scans/scan/graph", "/api/v1/scans/scan/diagnoses"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		validateAPIResponse(t, request, response)
 	}
-	for _, path := range []string{"/api/v1/scans/scan", "/api/v1/scans/scan/observations", "/api/v1/scans/scan/findings"} {
+	for _, path := range []string{"/api/v1/scans/scan", "/api/v1/scans/scan/observations", "/api/v1/scans/scan/findings", "/api/v1/scans/scan/components", "/api/v1/scans/scan/graph", "/api/v1/scans/scan/diagnoses"} {
 		request := httptest.NewRequest(http.MethodDelete, path, nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)

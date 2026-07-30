@@ -67,6 +67,16 @@ func run(argv []string, out, errOut io.Writer) int {
 		if e != nil {
 			return 1
 		}
+		if len(x.Diagnoses) > 0 {
+			if _, e = fmt.Fprintln(out, "Diagnoses:"); e != nil {
+				return 1
+			}
+			for _, diagnosis := range x.Diagnoses {
+				if _, e = fmt.Fprintf(out, "- %s (%s)\n", diagnosis.Code, diagnosis.Classification); e != nil {
+					return 1
+				}
+			}
+		}
 		return 0
 	case "report":
 		if len(args) != 2 {

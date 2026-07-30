@@ -48,6 +48,33 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '405': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /api/v1/scans/{scan_id}/components:
+    get:
+      operationId: getScanComponents
+      parameters: [{$ref: '#/components/parameters/ScanID'}]
+      responses:
+        '200': {description: Scan-owned component inventory, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Component'}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /api/v1/scans/{scan_id}/graph:
+    get:
+      operationId: getScanGraph
+      parameters: [{$ref: '#/components/parameters/ScanID'}]
+      responses:
+        '200': {description: Scan-owned component dependency graph, content: {application/json: {schema: {$ref: '#/components/schemas/Graph'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /api/v1/scans/{scan_id}/diagnoses:
+    get:
+      operationId: getScanDiagnoses
+      parameters: [{$ref: '#/components/parameters/ScanID'}]
+      responses:
+        '200': {description: Cross-component diagnoses, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Diagnosis'}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /api/v1/events:
     get:
       operationId: streamEvents
@@ -159,6 +186,38 @@ components:
       additionalProperties: false
       required: [current_time]
       properties: {current_time: {type: string, format: date-time}}
+    BitcoinBlockHashValue:
+      type: object
+      additionalProperties: false
+      required: [height, block_hash]
+      properties:
+        height: {type: integer, minimum: 0}
+        block_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
+    ElectrumTransportValue:
+      type: object
+      additionalProperties: false
+      required: [reached, transport_kind, tls_verification, protocol_negotiation, category]
+      properties:
+        reached: {type: boolean}
+        transport_kind: {type: string, enum: [tcp, tls]}
+        tls_verification: {type: string, enum: [not_applicable, verified, failed, unknown]}
+        protocol_negotiation: {type: string, enum: [accepted, unsupported, unknown]}
+        category: {type: string, minLength: 1}
+    ElectrumIdentityValue:
+      type: object
+      additionalProperties: false
+      required: [implementation_family, protocol_version]
+      properties:
+        implementation_family: {type: string, enum: [electrs, fulcrum, unknown]}
+        protocol_version: {type: string, enum: ['1.4', '1.4.1', '1.4.2', '1.4.3']}
+    ElectrumTipValue:
+      type: object
+      additionalProperties: false
+      required: [height, block_hash, header_time]
+      properties:
+        height: {type: integer, minimum: 0}
+        block_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        header_time: {type: string, format: date-time}
     Observation:
       type: object
       additionalProperties: false
@@ -167,29 +226,45 @@ components:
         id: {type: string, minLength: 1}
         probe_execution_id: {type: string, minLength: 1}
         component_id: {type: string, minLength: 1}
-        kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}
+        kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, bitcoin.chain.block-hash, filesystem.capacity, system.clock.current, electrum.protocol.transport, electrum.server.identity, electrum.chain.tip]}
         schema_version: {type: string, enum: [v1]}
         observed_at: {type: string, format: date-time}
         capability_id: {type: string, minLength: 1}
         provider_id: {type: string, minLength: 1}
-        sensitivity: {type: string, enum: [none]}
+        sensitivity: {type: string, enum: [none, local_sensitive]}
         bitcoin_rpc_transport: {$ref: '#/components/schemas/RPCTransportValue'}
         bitcoin_chain_state: {$ref: '#/components/schemas/BitcoinChainStateValue'}
         filesystem_capacity: {$ref: '#/components/schemas/FilesystemCapacityValue'}
         clock_state: {$ref: '#/components/schemas/ClockStateValue'}
+        bitcoin_block_hash: {$ref: '#/components/schemas/BitcoinBlockHashValue'}
+        electrum_protocol_transport: {$ref: '#/components/schemas/ElectrumTransportValue'}
+        electrum_server_identity: {$ref: '#/components/schemas/ElectrumIdentityValue'}
+        electrum_chain_tip: {$ref: '#/components/schemas/ElectrumTipValue'}
       oneOf:
         - required: [bitcoin_rpc_transport]
           properties: {kind: {enum: [bitcoin.rpc.transport]}}
-          not: {anyOf: [{required: [bitcoin_chain_state]}, {required: [filesystem_capacity]}, {required: [clock_state]}]}
+          not: {anyOf: [{required: [bitcoin_chain_state]}, {required: [bitcoin_block_hash]}, {required: [filesystem_capacity]}, {required: [clock_state]}, {required: [electrum_protocol_transport]}, {required: [electrum_server_identity]}, {required: [electrum_chain_tip]}]}
         - required: [bitcoin_chain_state]
           properties: {kind: {enum: [bitcoin.chain.state]}}
-          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [filesystem_capacity]}, {required: [clock_state]}]}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_block_hash]}, {required: [filesystem_capacity]}, {required: [clock_state]}, {required: [electrum_protocol_transport]}, {required: [electrum_server_identity]}, {required: [electrum_chain_tip]}]}
+        - required: [bitcoin_block_hash]
+          properties: {kind: {enum: [bitcoin.chain.block-hash]}}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [filesystem_capacity]}, {required: [clock_state]}, {required: [electrum_protocol_transport]}, {required: [electrum_server_identity]}, {required: [electrum_chain_tip]}]}
         - required: [filesystem_capacity]
           properties: {kind: {enum: [filesystem.capacity]}}
-          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [clock_state]}]}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [bitcoin_block_hash]}, {required: [clock_state]}, {required: [electrum_protocol_transport]}, {required: [electrum_server_identity]}, {required: [electrum_chain_tip]}]}
         - required: [clock_state]
           properties: {kind: {enum: [system.clock.current]}}
-          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [filesystem_capacity]}]}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [bitcoin_block_hash]}, {required: [filesystem_capacity]}, {required: [electrum_protocol_transport]}, {required: [electrum_server_identity]}, {required: [electrum_chain_tip]}]}
+        - required: [electrum_protocol_transport]
+          properties: {kind: {enum: [electrum.protocol.transport]}}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [bitcoin_block_hash]}, {required: [filesystem_capacity]}, {required: [clock_state]}, {required: [electrum_server_identity]}, {required: [electrum_chain_tip]}]}
+        - required: [electrum_server_identity]
+          properties: {kind: {enum: [electrum.server.identity]}}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [bitcoin_block_hash]}, {required: [filesystem_capacity]}, {required: [clock_state]}, {required: [electrum_protocol_transport]}, {required: [electrum_chain_tip]}]}
+        - required: [electrum_chain_tip]
+          properties: {kind: {enum: [electrum.chain.tip]}}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [bitcoin_block_hash]}, {required: [filesystem_capacity]}, {required: [clock_state]}, {required: [electrum_protocol_transport]}, {required: [electrum_server_identity]}]}
     UnknownReason:
       type: object
       additionalProperties: false
@@ -207,26 +282,33 @@ components:
       required: [observation_id, observation_kind, role]
       properties:
         observation_id: {type: string, minLength: 1}
-        observation_kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}
+        observation_kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, bitcoin.chain.block-hash, filesystem.capacity, system.clock.current, electrum.protocol.transport, electrum.server.identity, electrum.chain.tip]}
         role: {type: string, enum: [supports, contradicts, bounds, contextualizes, establishes_dependency, establishes_timing]}
     MissingEvidence:
       type: object
       additionalProperties: false
       required: [observation_kind, problem, reason_code]
       properties:
-        observation_kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}
+        observation_kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, bitcoin.chain.block-hash, filesystem.capacity, system.clock.current, electrum.protocol.transport, electrum.server.identity, electrum.chain.tip]}
         problem: {type: string, enum: [missing, stale, conflicting, unusable]}
         reason_code: {type: string, minLength: 1}
     EvaluatorThresholds:
       type: object
       additionalProperties: false
-      required: [max_tip_age_seconds, min_verification_progress, max_header_lag, warning_available_percent, failure_available_percent]
+      required: [max_tip_age_seconds, min_verification_progress, max_header_lag, warning_available_percent, failure_available_percent, electrum_tip_warning_age_seconds, electrum_tip_failure_age_seconds, electrum_lag_warning_blocks, electrum_lag_failure_blocks, max_observation_skew_seconds, max_observation_age_seconds, max_future_skew_seconds]
       properties:
         max_tip_age_seconds: {type: integer, minimum: 0}
         min_verification_progress: {type: number, minimum: 0, maximum: 1}
         max_header_lag: {type: integer, minimum: 0}
         warning_available_percent: {type: number, minimum: 0, maximum: 100}
         failure_available_percent: {type: number, minimum: 0, maximum: 100}
+        electrum_tip_warning_age_seconds: {type: integer, minimum: 0}
+        electrum_tip_failure_age_seconds: {type: integer, minimum: 0}
+        electrum_lag_warning_blocks: {type: integer, minimum: 0}
+        electrum_lag_failure_blocks: {type: integer, minimum: 0}
+        max_observation_skew_seconds: {type: integer, minimum: 0}
+        max_observation_age_seconds: {type: integer, minimum: 0}
+        max_future_skew_seconds: {type: integer, minimum: 0}
     Finding:
       type: object
       additionalProperties: false
@@ -257,3 +339,58 @@ components:
             unknown_reasons: {maxItems: 0}
             missing_evidence: {maxItems: 0}
             evidence: {minItems: 1}
+    Component:
+      type: object
+      additionalProperties: false
+      required: [component_id, component_kind, implementation_family, display_alias, provenance, state]
+      properties:
+        component_id: {type: string, enum: [bitcoin.primary, electrum.primary, system.local, filesystem.bitcoin-data]}
+        component_kind: {type: string, enum: [bitcoin-node, electrum-backend, local-system, filesystem]}
+        implementation_family: {type: string, enum: [bitcoin, electrum, local-system, filesystem]}
+        implementation_version: {type: string}
+        display_alias: {type: string, minLength: 1}
+        provenance: {type: string, enum: [configuration, built_in]}
+        state: {type: string, enum: [configured, discovered]}
+    DependencyEdge:
+      type: object
+      additionalProperties: false
+      required: [edge_id, source_component_id, destination_component_id, relationship_kind, provenance, confidence, recorded_at]
+      properties:
+        edge_id: {type: string, minLength: 1}
+        source_component_id: {type: string, minLength: 1}
+        destination_component_id: {type: string, minLength: 1}
+        relationship_kind: {type: string, enum: [uses_chain_from]}
+        provenance: {type: string, enum: [configuration]}
+        confidence: {type: string, enum: [low, medium, high]}
+        recorded_at: {type: string, format: date-time}
+    Graph:
+      type: object
+      additionalProperties: false
+      required: [components, dependency_edges]
+      properties:
+        components: {type: array, items: {$ref: '#/components/schemas/Component'}}
+        dependency_edges: {type: array, items: {$ref: '#/components/schemas/DependencyEdge'}}
+    Diagnosis:
+      type: object
+      additionalProperties: false
+      required: [id, code, classification, confidence, summary_key, component_ids, finding_ids, evidence, blocking_unknown_finding_ids, plausible_alternative_codes, correlation_rule_id, correlation_rule_version, diagnosed_at]
+      properties:
+        id: {type: string, minLength: 1}
+        code: {type: string, minLength: 1}
+        classification: {type: string, enum: [root_cause, break_point, contributing_factor, symptom_cluster, inconclusive]}
+        confidence: {type: string, enum: [low, medium, high]}
+        summary_key: {type: string, minLength: 1}
+        component_ids: {type: array, minItems: 1, items: {type: string, minLength: 1}}
+        finding_ids: {type: array, minItems: 1, items: {type: string, minLength: 1}}
+        evidence: {type: array, items: {$ref: '#/components/schemas/EvidenceReference'}}
+        blocking_unknown_finding_ids: {type: array, items: {type: string, minLength: 1}}
+        plausible_alternative_codes: {type: array, items: {type: string, minLength: 1}}
+        correlation_rule_id: {type: string, minLength: 1}
+        correlation_rule_version: {type: string, minLength: 1}
+        diagnosed_at: {type: string, format: date-time}
+      oneOf:
+        - properties:
+            classification: {enum: [inconclusive]}
+            blocking_unknown_finding_ids: {minItems: 1}
+        - properties:
+            classification: {enum: [root_cause, break_point, contributing_factor, symptom_cluster]}

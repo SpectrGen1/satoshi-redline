@@ -3,7 +3,11 @@
   "$id": "urn:satoshi-redline:schema:report:v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format", "schema_id", "format_version", "report_id", "generated_at", "producer", "privacy", "scan", "coverage", "probe_executions", "observations", "findings"],
+  "required": [
+    "format", "schema_id", "format_version", "report_id", "generated_at",
+    "producer", "privacy", "scan", "coverage", "components", "dependency_edges",
+    "probe_executions", "observations", "findings", "diagnoses"
+  ],
   "properties": {
     "format": {"const": "satoshi-redline-report"},
     "schema_id": {"const": "urn:satoshi-redline:schema:report:v1"},
@@ -14,14 +18,16 @@
     "privacy": {"$ref": "#/$defs/privacy"},
     "scan": {"$ref": "#/$defs/scan"},
     "coverage": {"$ref": "#/$defs/coverage"},
+    "components": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/component"}},
+    "dependency_edges": {"type": "array", "items": {"$ref": "#/$defs/dependency_edge"}},
     "probe_executions": {"type": "array", "items": {"$ref": "#/$defs/probe_execution"}},
     "observations": {"type": "array", "items": {"$ref": "#/$defs/observation"}},
-    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "diagnoses": {"type": "array", "items": {"$ref": "#/$defs/diagnosis"}}
   },
   "$defs": {
     "producer": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["product_name", "product_version", "build_id"],
       "properties": {
         "product_name": {"type": "string", "minLength": 1},
@@ -30,17 +36,12 @@
       }
     },
     "privacy": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["profile", "validated"],
-      "properties": {
-        "profile": {"const": "shareable"},
-        "validated": {"const": true}
-      }
+      "properties": {"profile": {"const": "shareable"}, "validated": {"const": true}}
     },
     "scan": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["id", "started_at", "finished_at", "status", "health"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
@@ -51,8 +52,7 @@
       }
     },
     "coverage": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["state", "applicable_required", "assessed_required", "unknown_required"],
       "properties": {
         "state": {"enum": ["complete", "partial", "minimal", "unavailable"]},
@@ -61,9 +61,34 @@
         "unknown_required": {"type": "integer", "minimum": 0}
       }
     },
+    "component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component_id", "component_kind", "implementation_family", "display_alias", "provenance", "state"],
+      "properties": {
+        "component_id": {"enum": ["bitcoin.primary", "electrum.primary", "system.local", "filesystem.bitcoin-data"]},
+        "component_kind": {"enum": ["bitcoin-node", "electrum-backend", "local-system", "filesystem"]},
+        "implementation_family": {"enum": ["bitcoin", "electrum", "local-system", "filesystem"]},
+        "implementation_version": {"type": "string"},
+        "display_alias": {"type": "string", "minLength": 1},
+        "provenance": {"enum": ["configuration", "built_in"]},
+        "state": {"enum": ["configured", "discovered"]}
+      }
+    },
+    "dependency_edge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["edge_id", "source_component_id", "destination_component_id", "relationship_kind", "provenance", "confidence", "recorded_at"],
+      "properties": {
+        "edge_id": {"type": "string", "minLength": 1},
+        "source_component_id": {"type": "string", "minLength": 1},
+        "destination_component_id": {"type": "string", "minLength": 1},
+        "relationship_kind": {"const": "uses_chain_from"},
+        "provenance": {"const": "configuration"},
+        "confidence": {"enum": ["low", "medium", "high"]},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    },
     "probe_execution": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["id", "probe_id", "probe_version", "outcome", "started_at", "finished_at", "duration_ms"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
@@ -77,8 +102,7 @@
       }
     },
     "rpc_transport": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["reached", "authentication", "category"],
       "properties": {
         "reached": {"type": "boolean"},
@@ -87,8 +111,7 @@
       }
     },
     "chain_state": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["blocks", "headers", "verification_progress", "initial_block_download", "tip_time"],
       "properties": {
         "blocks": {"type": "integer", "minimum": 0},
@@ -98,9 +121,16 @@
         "tip_time": {"type": "string", "format": "date-time"}
       }
     },
+    "bitcoin_block_hash": {
+      "type": "object", "additionalProperties": false,
+      "required": ["height", "block_hash"],
+      "properties": {
+        "height": {"type": "integer", "minimum": 0},
+        "block_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
     "filesystem_capacity": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["total_bytes", "available_bytes", "read_only", "mount_present"],
       "properties": {
         "total_bytes": {"type": "integer", "minimum": 1},
@@ -110,56 +140,73 @@
       }
     },
     "clock_state": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["current_time"],
       "properties": {"current_time": {"type": "string", "format": "date-time"}}
     },
+    "electrum_transport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reached", "transport_kind", "tls_verification", "protocol_negotiation", "category"],
+      "properties": {
+        "reached": {"type": "boolean"},
+        "transport_kind": {"enum": ["tcp", "tls"]},
+        "tls_verification": {"enum": ["not_applicable", "verified", "failed", "unknown"]},
+        "protocol_negotiation": {"enum": ["accepted", "unsupported", "unknown"]},
+        "category": {"type": "string", "minLength": 1}
+      }
+    },
+    "electrum_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["implementation_family", "protocol_version"],
+      "properties": {
+        "implementation_family": {"enum": ["electrs", "fulcrum", "unknown"]},
+        "protocol_version": {"enum": ["1.4", "1.4.1", "1.4.2", "1.4.3"]}
+      }
+    },
+    "electrum_tip": {
+      "type": "object", "additionalProperties": false,
+      "required": ["height", "block_hash", "header_time"],
+      "properties": {
+        "height": {"type": "integer", "minimum": 0},
+        "block_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "header_time": {"type": "string", "format": "date-time"}
+      }
+    },
     "observation": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["id", "probe_execution_id", "component_id", "kind", "schema_version", "observed_at", "capability_id", "provider_id", "sensitivity"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "probe_execution_id": {"type": "string", "minLength": 1},
         "component_id": {"type": "string", "minLength": 1},
-        "kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "filesystem.capacity", "system.clock.current"]},
+        "kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "bitcoin.chain.block-hash", "filesystem.capacity", "system.clock.current", "electrum.protocol.transport", "electrum.server.identity", "electrum.chain.tip"]},
         "schema_version": {"const": "v1"},
         "observed_at": {"type": "string", "format": "date-time"},
         "capability_id": {"type": "string", "minLength": 1},
         "provider_id": {"type": "string", "minLength": 1},
-        "sensitivity": {"enum": ["none"]},
+        "sensitivity": {"enum": ["none", "local_sensitive"]},
         "bitcoin_rpc_transport": {"$ref": "#/$defs/rpc_transport"},
         "bitcoin_chain_state": {"$ref": "#/$defs/chain_state"},
+        "bitcoin_block_hash": {"$ref": "#/$defs/bitcoin_block_hash"},
         "filesystem_capacity": {"$ref": "#/$defs/filesystem_capacity"},
-        "clock_state": {"$ref": "#/$defs/clock_state"}
+        "clock_state": {"$ref": "#/$defs/clock_state"},
+        "electrum_protocol_transport": {"$ref": "#/$defs/electrum_transport"},
+        "electrum_server_identity": {"$ref": "#/$defs/electrum_identity"},
+        "electrum_chain_tip": {"$ref": "#/$defs/electrum_tip"}
       },
       "oneOf": [
-        {
-          "required": ["bitcoin_rpc_transport"],
-          "properties": {"kind": {"const": "bitcoin.rpc.transport"}},
-          "not": {"anyOf": [{"required": ["bitcoin_chain_state"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}]}
-        },
-        {
-          "required": ["bitcoin_chain_state"],
-          "properties": {"kind": {"const": "bitcoin.chain.state"}},
-          "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}]}
-        },
-        {
-          "required": ["filesystem_capacity"],
-          "properties": {"kind": {"const": "filesystem.capacity"}},
-          "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["clock_state"]}]}
-        },
-        {
-          "required": ["clock_state"],
-          "properties": {"kind": {"const": "system.clock.current"}},
-          "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["filesystem_capacity"]}]}
-        }
+        {"required": ["bitcoin_rpc_transport"], "properties": {"kind": {"const": "bitcoin.rpc.transport"}}, "not": {"anyOf": [{"required": ["bitcoin_chain_state"]}, {"required": ["bitcoin_block_hash"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}, {"required": ["electrum_protocol_transport"]}, {"required": ["electrum_server_identity"]}, {"required": ["electrum_chain_tip"]}]}},
+        {"required": ["bitcoin_chain_state"], "properties": {"kind": {"const": "bitcoin.chain.state"}}, "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_block_hash"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}, {"required": ["electrum_protocol_transport"]}, {"required": ["electrum_server_identity"]}, {"required": ["electrum_chain_tip"]}]}},
+        {"required": ["bitcoin_block_hash"], "properties": {"kind": {"const": "bitcoin.chain.block-hash"}}, "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}, {"required": ["electrum_protocol_transport"]}, {"required": ["electrum_server_identity"]}, {"required": ["electrum_chain_tip"]}]}},
+        {"required": ["filesystem_capacity"], "properties": {"kind": {"const": "filesystem.capacity"}}, "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["bitcoin_block_hash"]}, {"required": ["clock_state"]}, {"required": ["electrum_protocol_transport"]}, {"required": ["electrum_server_identity"]}, {"required": ["electrum_chain_tip"]}]}},
+        {"required": ["clock_state"], "properties": {"kind": {"const": "system.clock.current"}}, "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["bitcoin_block_hash"]}, {"required": ["filesystem_capacity"]}, {"required": ["electrum_protocol_transport"]}, {"required": ["electrum_server_identity"]}, {"required": ["electrum_chain_tip"]}]}},
+        {"required": ["electrum_protocol_transport"], "properties": {"kind": {"const": "electrum.protocol.transport"}}, "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["bitcoin_block_hash"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}, {"required": ["electrum_server_identity"]}, {"required": ["electrum_chain_tip"]}]}},
+        {"required": ["electrum_server_identity"], "properties": {"kind": {"const": "electrum.server.identity"}}, "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["bitcoin_block_hash"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}, {"required": ["electrum_protocol_transport"]}, {"required": ["electrum_chain_tip"]}]}},
+        {"required": ["electrum_chain_tip"], "properties": {"kind": {"const": "electrum.chain.tip"}}, "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["bitcoin_block_hash"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}, {"required": ["electrum_protocol_transport"]}, {"required": ["electrum_server_identity"]}]}}
       ]
     },
     "unknown_reason": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["code", "stage", "retryability", "resolution_class"],
       "properties": {
         "code": {"type": "string", "minLength": 1},
@@ -171,40 +218,49 @@
       }
     },
     "evidence_reference": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["observation_id", "observation_kind", "role"],
       "properties": {
         "observation_id": {"type": "string", "minLength": 1},
-        "observation_kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "filesystem.capacity", "system.clock.current"]},
+        "observation_kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "bitcoin.chain.block-hash", "filesystem.capacity", "system.clock.current", "electrum.protocol.transport", "electrum.server.identity", "electrum.chain.tip"]},
         "role": {"enum": ["supports", "contradicts", "bounds", "contextualizes", "establishes_dependency", "establishes_timing"]}
       }
     },
     "missing_evidence": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["observation_kind", "problem", "reason_code"],
       "properties": {
-        "observation_kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "filesystem.capacity", "system.clock.current"]},
+        "observation_kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "bitcoin.chain.block-hash", "filesystem.capacity", "system.clock.current", "electrum.protocol.transport", "electrum.server.identity", "electrum.chain.tip"]},
         "problem": {"enum": ["missing", "stale", "conflicting", "unusable"]},
         "reason_code": {"type": "string", "minLength": 1}
       }
     },
     "thresholds": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["max_tip_age_seconds", "min_verification_progress", "max_header_lag", "warning_available_percent", "failure_available_percent"],
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "max_tip_age_seconds", "min_verification_progress", "max_header_lag",
+        "warning_available_percent", "failure_available_percent",
+        "electrum_tip_warning_age_seconds", "electrum_tip_failure_age_seconds",
+        "electrum_lag_warning_blocks", "electrum_lag_failure_blocks",
+        "max_observation_skew_seconds", "max_observation_age_seconds", "max_future_skew_seconds"
+      ],
       "properties": {
         "max_tip_age_seconds": {"type": "integer", "minimum": 0},
         "min_verification_progress": {"type": "number", "minimum": 0, "maximum": 1},
         "max_header_lag": {"type": "integer", "minimum": 0},
         "warning_available_percent": {"type": "number", "minimum": 0, "maximum": 100},
-        "failure_available_percent": {"type": "number", "minimum": 0, "maximum": 100}
+        "failure_available_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "electrum_tip_warning_age_seconds": {"type": "integer", "minimum": 0},
+        "electrum_tip_failure_age_seconds": {"type": "integer", "minimum": 0},
+        "electrum_lag_warning_blocks": {"type": "integer", "minimum": 0},
+        "electrum_lag_failure_blocks": {"type": "integer", "minimum": 0},
+        "max_observation_skew_seconds": {"type": "integer", "minimum": 0},
+        "max_observation_age_seconds": {"type": "integer", "minimum": 0},
+        "max_future_skew_seconds": {"type": "integer", "minimum": 0}
       }
     },
     "finding": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["id", "code", "component_id", "status", "applicability", "severity", "confidence", "evaluator_id", "evaluator_version", "evaluated_at", "coverage_role", "unknown_reasons", "evidence", "missing_evidence", "thresholds"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
@@ -240,6 +296,31 @@
           }
         }
       ]
+    },
+    "diagnosis": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "code", "classification", "confidence", "summary_key",
+        "component_ids", "finding_ids", "evidence", "blocking_unknown_finding_ids",
+        "plausible_alternative_codes", "correlation_rule_id", "correlation_rule_version", "diagnosed_at"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "code": {"type": "string", "minLength": 1},
+        "classification": {"enum": ["root_cause", "break_point", "contributing_factor", "symptom_cluster", "inconclusive"]},
+        "confidence": {"enum": ["low", "medium", "high"]},
+        "summary_key": {"type": "string", "minLength": 1},
+        "component_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "finding_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_reference"}},
+        "blocking_unknown_finding_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "plausible_alternative_codes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "correlation_rule_id": {"type": "string", "minLength": 1},
+        "correlation_rule_version": {"type": "string", "minLength": 1},
+        "diagnosed_at": {"type": "string", "format": "date-time"}
+      },
+      "if": {"properties": {"classification": {"const": "inconclusive"}}},
+      "then": {"properties": {"blocking_unknown_finding_ids": {"minItems": 1}}}
     }
   }
 }

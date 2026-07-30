@@ -118,7 +118,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 500, "catalog_unavailable", "The compiled probe catalog is unavailable.", false)
 		return
 	}
-	d := MetaDTO{buildinfo.Version, buildinfo.BuildID, 1, "1", 1, []int{1}, []int{1}, []string{"bitcoin_rpc", "filesystem_capacity"}, nil}
+	d := MetaDTO{buildinfo.Version, buildinfo.BuildID, 1, "1", 1, []int{1}, []int{1}, []string{"bitcoin_rpc", "filesystem_capacity", "electrum_protocol", "dependency_graph", "diagnoses"}, nil}
 	for _, p := range c.Probes() {
 		x := p.Descriptor()
 		v := ProbeCatalogDTO{ID: x.ID, Version: x.Version, ScanMode: string(x.Mode), RequiredCapabilities: []string{}, OptionalCapabilities: []string{}, SideEffects: []string{}, ObservationKinds: append([]string{}, x.ObservationKinds...)}
@@ -158,7 +158,7 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 404, "route_not_found", "The requested API route does not exist.", false)
 		return
 	}
-	if len(parts) == 2 && parts[1] != "observations" && parts[1] != "findings" {
+	if len(parts) == 2 && parts[1] != "observations" && parts[1] != "findings" && parts[1] != "components" && parts[1] != "graph" && parts[1] != "diagnoses" {
 		apiError(w, 404, "route_not_found", "The requested API route does not exist.", false)
 		return
 	}
@@ -179,7 +179,19 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, observationsDTO(x.Observations))
 		return
 	}
-	write(w, 200, findingsDTO(x.Findings))
+	if parts[1] == "findings" {
+		write(w, 200, findingsDTO(x.Findings))
+		return
+	}
+	if parts[1] == "components" {
+		write(w, 200, componentsDTO(x.Components))
+		return
+	}
+	if parts[1] == "graph" {
+		write(w, 200, GraphDTO{Components: componentsDTO(x.Components), DependencyEdges: edgesDTO(x.DependencyEdges)})
+		return
+	}
+	write(w, 200, diagnosesDTO(x.Diagnoses))
 }
 
 type CoverageDTO struct {
@@ -222,20 +234,44 @@ type FSValue struct {
 type ClockValue struct {
 	CurrentTime string `json:"current_time"`
 }
+type BitcoinBlockHashValue struct {
+	Height    int64  `json:"height"`
+	BlockHash string `json:"block_hash"`
+}
+type ElectrumTransportValue struct {
+	Reached             bool   `json:"reached"`
+	TransportKind       string `json:"transport_kind"`
+	TLSVerification     string `json:"tls_verification"`
+	ProtocolNegotiation string `json:"protocol_negotiation"`
+	Category            string `json:"category"`
+}
+type ElectrumIdentityValue struct {
+	ImplementationFamily string `json:"implementation_family"`
+	ProtocolVersion      string `json:"protocol_version"`
+}
+type ElectrumTipValue struct {
+	Height     int64  `json:"height"`
+	BlockHash  string `json:"block_hash"`
+	HeaderTime string `json:"header_time"`
+}
 type ObservationDTO struct {
-	ID               string      `json:"id"`
-	ProbeExecutionID string      `json:"probe_execution_id"`
-	ComponentID      string      `json:"component_id"`
-	Kind             string      `json:"kind"`
-	SchemaVersion    string      `json:"schema_version"`
-	ObservedAt       string      `json:"observed_at"`
-	CapabilityID     string      `json:"capability_id"`
-	ProviderID       string      `json:"provider_id"`
-	Sensitivity      string      `json:"sensitivity"`
-	RPC              *RPCValue   `json:"bitcoin_rpc_transport,omitempty"`
-	Chain            *ChainValue `json:"bitcoin_chain_state,omitempty"`
-	Filesystem       *FSValue    `json:"filesystem_capacity,omitempty"`
-	Clock            *ClockValue `json:"clock_state,omitempty"`
+	ID                string                  `json:"id"`
+	ProbeExecutionID  string                  `json:"probe_execution_id"`
+	ComponentID       string                  `json:"component_id"`
+	Kind              string                  `json:"kind"`
+	SchemaVersion     string                  `json:"schema_version"`
+	ObservedAt        string                  `json:"observed_at"`
+	CapabilityID      string                  `json:"capability_id"`
+	ProviderID        string                  `json:"provider_id"`
+	Sensitivity       string                  `json:"sensitivity"`
+	RPC               *RPCValue               `json:"bitcoin_rpc_transport,omitempty"`
+	Chain             *ChainValue             `json:"bitcoin_chain_state,omitempty"`
+	Filesystem        *FSValue                `json:"filesystem_capacity,omitempty"`
+	Clock             *ClockValue             `json:"clock_state,omitempty"`
+	BitcoinBlockHash  *BitcoinBlockHashValue  `json:"bitcoin_block_hash,omitempty"`
+	ElectrumTransport *ElectrumTransportValue `json:"electrum_protocol_transport,omitempty"`
+	ElectrumIdentity  *ElectrumIdentityValue  `json:"electrum_server_identity,omitempty"`
+	ElectrumTip       *ElectrumTipValue       `json:"electrum_chain_tip,omitempty"`
 }
 
 func observationsDTO(a []domain.Observation) []ObservationDTO {
@@ -251,6 +287,14 @@ func observationsDTO(a []domain.Observation) []ObservationDTO {
 			d.Filesystem = &FSValue{v.TotalBytes, v.AvailableBytes, v.ReadOnly, v.MountPresent}
 		case domain.ClockState:
 			d.Clock = &ClockValue{v.Current.UTC().Format(time.RFC3339)}
+		case domain.BitcoinBlockHash:
+			d.BitcoinBlockHash = &BitcoinBlockHashValue{v.Height, v.BlockHash}
+		case domain.ElectrumProtocolTransport:
+			d.ElectrumTransport = &ElectrumTransportValue{v.Reached, string(v.Transport), string(v.TLSVerification), string(v.ProtocolNegotiation), v.Category}
+		case domain.ElectrumServerIdentity:
+			d.ElectrumIdentity = &ElectrumIdentityValue{string(v.ImplementationFamily), v.ProtocolVersion}
+		case domain.ElectrumChainTip:
+			d.ElectrumTip = &ElectrumTipValue{v.Height, v.BlockHash, v.HeaderTime.UTC().Format(time.RFC3339)}
 		}
 		out = append(out, d)
 	}
@@ -276,11 +320,18 @@ type MissingDTO struct {
 	ReasonCode      string `json:"reason_code"`
 }
 type ThresholdDTO struct {
-	MaxTipAgeSeconds        int64   `json:"max_tip_age_seconds"`
-	MinVerificationProgress float64 `json:"min_verification_progress"`
-	MaxHeaderLag            int64   `json:"max_header_lag"`
-	WarningAvailablePercent float64 `json:"warning_available_percent"`
-	FailureAvailablePercent float64 `json:"failure_available_percent"`
+	MaxTipAgeSeconds             int64   `json:"max_tip_age_seconds"`
+	MinVerificationProgress      float64 `json:"min_verification_progress"`
+	MaxHeaderLag                 int64   `json:"max_header_lag"`
+	WarningAvailablePercent      float64 `json:"warning_available_percent"`
+	FailureAvailablePercent      float64 `json:"failure_available_percent"`
+	ElectrumTipWarningAgeSeconds int64   `json:"electrum_tip_warning_age_seconds"`
+	ElectrumTipFailureAgeSeconds int64   `json:"electrum_tip_failure_age_seconds"`
+	ElectrumLagWarningBlocks     int64   `json:"electrum_lag_warning_blocks"`
+	ElectrumLagFailureBlocks     int64   `json:"electrum_lag_failure_blocks"`
+	MaxObservationSkewSeconds    int64   `json:"max_observation_skew_seconds"`
+	MaxObservationAgeSeconds     int64   `json:"max_observation_age_seconds"`
+	MaxFutureSkewSeconds         int64   `json:"max_future_skew_seconds"`
 }
 type FindingDTO struct {
 	ID               string        `json:"id"`
@@ -303,7 +354,8 @@ type FindingDTO struct {
 func findingsDTO(a []domain.Finding) []FindingDTO {
 	out := make([]FindingDTO, 0, len(a))
 	for _, f := range a {
-		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Reasons: []ReasonDTO{}, Evidence: []EvidenceDTO{}, Missing: []MissingDTO{}, Thresholds: ThresholdDTO{f.Thresholds.MaxTipAgeSeconds, f.Thresholds.MinVerificationProgress, f.Thresholds.MaxHeaderLag, f.Thresholds.WarningAvailablePercent, f.Thresholds.FailureAvailablePercent}}
+		t := f.Thresholds
+		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Reasons: []ReasonDTO{}, Evidence: []EvidenceDTO{}, Missing: []MissingDTO{}, Thresholds: ThresholdDTO{t.MaxTipAgeSeconds, t.MinVerificationProgress, t.MaxHeaderLag, t.WarningAvailablePercent, t.FailureAvailablePercent, t.ElectrumTipWarningAgeSeconds, t.ElectrumTipFailureAgeSeconds, t.ElectrumLagWarningBlocks, t.ElectrumLagFailureBlocks, t.MaxObservationSkewSeconds, t.MaxObservationAgeSeconds, t.MaxFutureSkewSeconds}}
 		for _, v := range f.Reasons {
 			d.Reasons = append(d.Reasons, ReasonDTO{string(v.Code), string(v.Stage), string(v.Retryability), string(v.Resolution), v.CapabilityID, v.ProviderID})
 		}
@@ -314,6 +366,84 @@ func findingsDTO(a []domain.Finding) []FindingDTO {
 			d.Missing = append(d.Missing, MissingDTO{v.ObservationKind, string(v.Problem), string(v.ReasonCode)})
 		}
 		out = append(out, d)
+	}
+	return out
+}
+
+type ComponentDTO struct {
+	ID                    string `json:"component_id"`
+	Kind                  string `json:"component_kind"`
+	ImplementationFamily  string `json:"implementation_family"`
+	ImplementationVersion string `json:"implementation_version,omitempty"`
+	DisplayAlias          string `json:"display_alias"`
+	Provenance            string `json:"provenance"`
+	State                 string `json:"state"`
+}
+
+func componentsDTO(components []domain.Component) []ComponentDTO {
+	out := make([]ComponentDTO, 0, len(components))
+	for _, component := range components {
+		out = append(out, ComponentDTO{component.ID, string(component.Kind), string(component.ImplementationFamily), component.ImplementationVersion, component.DisplayAlias, string(component.Provenance), string(component.State)})
+	}
+	return out
+}
+
+type DependencyEdgeDTO struct {
+	ID                     string `json:"edge_id"`
+	SourceComponentID      string `json:"source_component_id"`
+	DestinationComponentID string `json:"destination_component_id"`
+	RelationshipKind       string `json:"relationship_kind"`
+	Provenance             string `json:"provenance"`
+	Confidence             string `json:"confidence"`
+	RecordedAt             string `json:"recorded_at"`
+}
+
+func edgesDTO(edges []domain.DependencyEdge) []DependencyEdgeDTO {
+	out := make([]DependencyEdgeDTO, 0, len(edges))
+	for _, edge := range edges {
+		out = append(out, DependencyEdgeDTO{edge.ID, edge.SourceComponentID, edge.DestinationComponentID, string(edge.Relationship), string(edge.Provenance), string(edge.Confidence), edge.RecordedAt.UTC().Format(time.RFC3339)})
+	}
+	return out
+}
+
+type GraphDTO struct {
+	Components      []ComponentDTO      `json:"components"`
+	DependencyEdges []DependencyEdgeDTO `json:"dependency_edges"`
+}
+
+type DiagnosisDTO struct {
+	ID                        string        `json:"id"`
+	Code                      string        `json:"code"`
+	Classification            string        `json:"classification"`
+	Confidence                string        `json:"confidence"`
+	SummaryKey                string        `json:"summary_key"`
+	ComponentIDs              []string      `json:"component_ids"`
+	FindingIDs                []string      `json:"finding_ids"`
+	Evidence                  []EvidenceDTO `json:"evidence"`
+	BlockingUnknownFindingIDs []string      `json:"blocking_unknown_finding_ids"`
+	PlausibleAlternativeCodes []string      `json:"plausible_alternative_codes"`
+	CorrelationRuleID         string        `json:"correlation_rule_id"`
+	CorrelationRuleVersion    string        `json:"correlation_rule_version"`
+	DiagnosedAt               string        `json:"diagnosed_at"`
+}
+
+func diagnosesDTO(diagnoses []domain.Diagnosis) []DiagnosisDTO {
+	out := make([]DiagnosisDTO, 0, len(diagnoses))
+	for _, diagnosis := range diagnoses {
+		dto := DiagnosisDTO{
+			ID: diagnosis.ID, Code: diagnosis.Code, Classification: string(diagnosis.Classification),
+			Confidence: string(diagnosis.Confidence), SummaryKey: diagnosis.SummaryKey,
+			ComponentIDs: append([]string{}, diagnosis.ComponentIDs...),
+			FindingIDs:   append([]string{}, diagnosis.FindingIDs...), Evidence: []EvidenceDTO{},
+			BlockingUnknownFindingIDs: append([]string{}, diagnosis.BlockingUnknownFindingIDs...),
+			PlausibleAlternativeCodes: append([]string{}, diagnosis.PlausibleAlternativeCodes...),
+			CorrelationRuleID:         diagnosis.CorrelationRuleID, CorrelationRuleVersion: diagnosis.CorrelationRuleVersion,
+			DiagnosedAt: diagnosis.DiagnosedAt.UTC().Format(time.RFC3339),
+		}
+		for _, evidence := range diagnosis.Evidence {
+			dto.Evidence = append(dto.Evidence, EvidenceDTO{evidence.ObservationID, evidence.ObservationKind, string(evidence.Role)})
+		}
+		out = append(out, dto)
 	}
 	return out
 }
