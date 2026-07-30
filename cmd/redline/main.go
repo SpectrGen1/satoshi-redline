@@ -2,73 +2,99 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/engine"
-	"github.com/satoshi-redline/redline/internal/reports/v1"
+	v1 "github.com/satoshi-redline/redline/internal/reports/v1"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
+	"io"
 	"os"
 )
 
-func main() {
-	fs := flag.NewFlagSet("redline", flag.ExitOnError)
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func run(argv []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("redline", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	cfg := fs.String("config", "redline.json", "configuration file")
-	fs.Parse(os.Args[1:])
+	if e := fs.Parse(argv); e != nil {
+		fmt.Fprintln(errOut, "invalid arguments")
+		return 2
+	}
 	args := fs.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: redline [--config file] scan [--json] | report <scan-id> | version")
-		os.Exit(2)
+		fmt.Fprintln(errOut, "usage: redline [--config file] scan [--json] | report <scan-id> | version")
+		return 2
 	}
 	if args[0] == "version" {
-		fmt.Println("redline mvp v0.1.0")
-		return
+		fmt.Fprintln(out, "redline mvp v0.1.0")
+		return 0
 	}
 	c, e := app.Load(*cfg)
 	if e != nil {
-		fmt.Fprintln(os.Stderr, "configuration error:", e)
-		os.Exit(2)
+		fmt.Fprintln(errOut, "configuration error")
+		return 2
 	}
-	if args[0] == "scan" {
-		s, openErr := sqlite.Open(c.DatabasePath)
-		if openErr != nil {
-			fmt.Fprintln(os.Stderr, "database unavailable")
-			os.Exit(1)
+	switch args[0] {
+	case "scan":
+		if len(args) > 2 || (len(args) == 2 && args[1] != "--json") {
+			fmt.Fprintln(errOut, "invalid command")
+			return 2
+		}
+		s, e := sqlite.Open(c.DatabasePath)
+		if e != nil {
+			fmt.Fprintln(errOut, "database unavailable")
+			return 1
 		}
 		defer s.Close()
 		x, e := (engine.Runner{Config: c}).ScanAndPersist(context.Background(), s)
 		if e != nil {
-			fmt.Fprintln(os.Stderr, "scan failed")
-			os.Exit(1)
+			fmt.Fprintln(errOut, "scan failed")
+			return 1
 		}
-		if len(args) > 1 && args[1] == "--json" {
-			_ = json.NewEncoder(os.Stdout).Encode(v1.FromDomain(x))
-			return
+		if len(args) == 2 {
+			b, e := v1.Marshal(x)
+			if e != nil {
+				fmt.Fprintln(errOut, "output error")
+				return 1
+			}
+			if _, e = fmt.Fprintln(out, string(b)); e != nil {
+				return 1
+			}
+			return 0
 		}
-		fmt.Printf("Scan ID: %s\nHealth: %s\nRequired coverage: %s (%d/%d assessed)\n", x.ID, x.Summary.Health, x.Summary.Coverage.State, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.ApplicableRequired)
-		return
-	}
-	if args[0] == "report" && len(args) == 2 {
+		_, e = fmt.Fprintf(out, "Scan ID: %s\nHealth: %s\nRequired coverage: %s (%d/%d assessed)\n", x.ID, x.Summary.Health, x.Summary.Coverage.State, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.ApplicableRequired)
+		if e != nil {
+			return 1
+		}
+		return 0
+	case "report":
+		if len(args) != 2 {
+			fmt.Fprintln(errOut, "invalid command")
+			return 2
+		}
 		s, e := sqlite.Open(c.DatabasePath)
 		if e != nil {
-			fmt.Fprintln(os.Stderr, "database unavailable")
-			os.Exit(1)
+			fmt.Fprintln(errOut, "database unavailable")
+			return 1
 		}
 		defer s.Close()
 		x, e := s.Get(context.Background(), args[1])
 		if e != nil {
-			fmt.Fprintln(os.Stderr, "scan not found")
-			os.Exit(1)
+			fmt.Fprintln(errOut, "scan not found")
+			return 1
 		}
 		b, e := v1.Marshal(x)
 		if e != nil {
-			fmt.Fprintln(os.Stderr, "report error")
-			os.Exit(1)
+			fmt.Fprintln(errOut, "report error")
+			return 1
 		}
-		fmt.Println(string(b))
-		return
+		if _, e = fmt.Fprintln(out, string(b)); e != nil {
+			return 1
+		}
+		return 0
+	default:
+		fmt.Fprintln(errOut, "invalid command")
+		return 2
 	}
-	fmt.Fprintln(os.Stderr, "invalid command")
-	os.Exit(2)
 }

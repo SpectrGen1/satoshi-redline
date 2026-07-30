@@ -8,7 +8,10 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -17,6 +20,23 @@ import (
 	"github.com/satoshi-redline/redline/internal/engine"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
 )
+
+type streamRecorder struct {
+	mu     sync.Mutex
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (r *streamRecorder) Header() http.Header { return r.header }
+func (r *streamRecorder) WriteHeader(v int)   { r.mu.Lock(); r.status = v; r.mu.Unlock() }
+func (r *streamRecorder) Write(b []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.Write(b)
+}
+func (r *streamRecorder) Flush()         {}
+func (r *streamRecorder) String() string { r.mu.Lock(); defer r.mu.Unlock(); return r.body.String() }
 
 func TestScanEndpoints(t *testing.T) {
 	s, err := sqlite.Open(filepath.Join(t.TempDir(), "api.db"))
@@ -98,5 +118,56 @@ func TestActualResponsesConformToOpenAPI(t *testing.T) {
 	validateAPIResponse(t, contractReq, methodRec)
 	if methodRec.Header().Get("Allow") != http.MethodGet {
 		t.Fatal("missing Allow header")
+	}
+}
+
+func TestSSEStreamsMultipleSafeEventsAndUnsubscribes(t *testing.T) {
+	s := &Server{}
+	handler := s.Handler()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	rec := &streamRecorder{header: make(http.Header)}
+	done := make(chan struct{})
+	go func() { handler.ServeHTTP(rec, req); close(done) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		s.hub.mu.RLock()
+		n := len(s.hub.subs)
+		s.hub.mu.RUnlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("subscriber not registered")
+		}
+		runtime.Gosched()
+	}
+	n := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	s.hub.Emit(engine.Event{ID: "e1", Type: "scan.started", ScanID: "s", OccurredAt: n})
+	s.hub.Emit(engine.Event{ID: "e2", Type: "scan.failed", ScanID: "s", OccurredAt: n, Outcome: "engine_failed"})
+	deadline = time.Now().Add(time.Second)
+	for !strings.Contains(rec.String(), "e2") {
+		if time.Now().After(deadline) {
+			t.Fatalf("events not streamed: %s", rec.String())
+		}
+		runtime.Gosched()
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not disconnect")
+	}
+	body := rec.String()
+	if strings.Count(body, "event: scan.") != 2 {
+		t.Fatalf("expected multiple events: %s", body)
+	}
+	if strings.Contains(body, "CANARY_SSE_ERROR") {
+		t.Fatal("canary leaked")
+	}
+	s.hub.mu.RLock()
+	defer s.hub.mu.RUnlock()
+	if len(s.hub.subs) != 0 {
+		t.Fatal("subscriber leaked")
 	}
 }
