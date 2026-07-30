@@ -192,20 +192,21 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 			electrumReason = result.Reason
 		}
 	}
-	scan.Findings = append(scan.Findings, evaluation.RPC(id, transportObs, rpcReason, now))
-	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, now)...)
-	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem, now))
+	evaluationTime := r.now()
+	scan.Findings = append(scan.Findings, evaluation.RPC(id, transportObs, rpcReason, evaluationTime))
+	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, evaluationTime)...)
+	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem, evaluationTime))
 	if r.Config.Electrum.Enabled {
 		scan.Findings = append(scan.Findings, evaluation.Electrum(id, evaluation.ElectrumEvidence{
 			Transport: electrumTransportObs, Identity: electrumIdentityObs, Tip: electrumTipObs,
 			Bitcoin: rpcObs, BitcoinHash: bitcoinHashObs, Limitation: electrumReason,
-		}, r.Config.Electrum, now)...)
+		}, r.Config.Electrum, evaluationTime)...)
 	}
 	for _, f := range scan.Findings {
 		r.emit(Event{ID: f.ID + "-created", Type: "scan.finding.created", ScanID: id, OccurredAt: f.EvaluatedAt, FindingCode: f.Code, Outcome: string(f.Status)})
 	}
 	if r.Config.Electrum.Enabled {
-		scan.Diagnoses = correlation.Electrum(id, scan.Components, scan.DependencyEdges, scan.Findings, now)
+		scan.Diagnoses = correlation.Electrum(id, scan.Components, scan.DependencyEdges, scan.Findings, evaluationTime)
 		for _, diagnosis := range scan.Diagnoses {
 			r.emit(Event{ID: diagnosis.ID + "-created", Type: "scan.diagnosis.created", ScanID: id, OccurredAt: diagnosis.DiagnosedAt, DiagnosisCode: diagnosis.Code, Outcome: string(diagnosis.Classification)})
 		}

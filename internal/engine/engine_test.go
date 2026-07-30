@@ -252,6 +252,34 @@ func TestScanTerminalEventSequences(t *testing.T) {
 	}
 }
 
+func TestEvaluationTimestampFollowsCollectionAndIsShared(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	call := 0
+	now := func() time.Time {
+		value := base.Add(time.Duration(call) * time.Second)
+		call++
+		return value
+	}
+	scan, err := (Runner{Config: app.DefaultConfig(), Now: now}).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.Findings) == 0 {
+		t.Fatal("findings missing")
+	}
+	evaluatedAt := scan.Findings[0].EvaluatedAt
+	for _, execution := range scan.Executions {
+		if evaluatedAt.Before(execution.FinishedAt) {
+			t.Fatalf("evaluation %s preceded collection finish %s", evaluatedAt, execution.FinishedAt)
+		}
+	}
+	for _, finding := range scan.Findings {
+		if !finding.EvaluatedAt.Equal(evaluatedAt) {
+			t.Fatal("evaluators did not share one evaluation timestamp")
+		}
+	}
+}
+
 func TestExecutionOutcomeClassification(t *testing.T) {
 	observation := domain.Observation{ID: "usable"}
 	tests := []struct {
