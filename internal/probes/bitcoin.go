@@ -17,7 +17,17 @@ func (BitcoinChainState) Collect(ctx context.Context, c capabilities.Set, scanID
 		return Result{Reason: domain.RequiredObservationMissing}
 	}
 	info, reason, reached := c.Bitcoin.Chain(ctx)
-	transport := domain.Observation{ID: executionID + "-rpc", ScanID: scanID, ProbeExecutionID: executionID, ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", CapabilityID: string(capabilities.BitcoinRPCRead), ProviderID: "configured.bitcoin-rpc", Sensitivity: "none", ObservedAt: now, Value: domain.RPCTransportResult{Reached: reached, Authenticated: reason == "", Category: string(reason)}}
+	authentication := domain.AuthenticationUnknown
+	if reason == "" || reason == domain.RPCError {
+		authentication = domain.AuthenticationAccepted
+	} else if reason == domain.AuthenticationRejected {
+		authentication = domain.AuthenticationRejectedState
+	}
+	category := string(reason)
+	if category == "" {
+		category = "valid_json_rpc_response"
+	}
+	transport := domain.Observation{ID: executionID + "-rpc", ScanID: scanID, ProbeExecutionID: executionID, ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", CapabilityID: string(capabilities.BitcoinRPCRead), ProviderID: "configured.bitcoin-rpc", Sensitivity: "none", ObservedAt: now, Value: domain.RPCTransportResult{Reached: reached, Authentication: authentication, Category: category}}
 	if reason != "" {
 		return Result{Values: []domain.Observation{transport}, Reason: reason}
 	}

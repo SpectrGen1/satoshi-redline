@@ -8,9 +8,10 @@ import (
 	"github.com/satoshi-redline/redline/internal/domain"
 	"io/fs"
 	_ "modernc.org/sqlite"
+	"path"
+	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -33,30 +34,55 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 func (s *Store) Close() error { return s.db.Close() }
+
+type migration struct {
+	version int
+	name    string
+	sql     string
+}
+
+var migrationName = regexp.MustCompile(`^([0-9]{3})_[a-z0-9]+(?:_[a-z0-9]+)*\.sql$`)
+
+func discoverMigrations(source fs.FS, directory string) ([]migration, error) {
+	entries, e := fs.ReadDir(source, directory)
+	if e != nil {
+		return nil, e
+	}
+	seen := map[int]bool{}
+	out := make([]migration, 0, len(entries))
+	for _, entry := range entries {
+		matches := migrationName.FindStringSubmatch(entry.Name())
+		if entry.IsDir() || matches == nil {
+			return nil, fmt.Errorf("malformed migration %q", entry.Name())
+		}
+		v, e := strconv.Atoi(matches[1])
+		if e != nil || v <= 0 || seen[v] {
+			return nil, fmt.Errorf("invalid migration number %q", entry.Name())
+		}
+		seen[v] = true
+		body, e := fs.ReadFile(source, path.Join(directory, entry.Name()))
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, migration{version: v, name: entry.Name(), sql: string(body)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	return out, nil
+}
+
 func (s *Store) Migrate(ctx context.Context) error {
-	entries, e := fs.ReadDir(migrationFS, "migrations")
+	migrations, e := discoverMigrations(migrationFS, "migrations")
 	if e != nil {
 		return e
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	seen := map[int]bool{}
-	for _, entry := range entries {
-		parts := strings.SplitN(entry.Name(), "_", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("malformed migration %q", entry.Name())
-		}
-		v, e := strconv.Atoi(parts[0])
-		if e != nil || v < 1 || seen[v] {
-			return fmt.Errorf("invalid migration number %q", entry.Name())
-		}
-		seen[v] = true
+	for _, migration := range migrations {
 		var applied int
 		e = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'").Scan(&applied)
 		if e != nil {
 			return e
 		}
 		if applied > 0 {
-			e = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE version=?", v).Scan(&applied)
+			e = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE version=?", migration.version).Scan(&applied)
 			if e != nil {
 				return e
 			}
@@ -64,24 +90,27 @@ func (s *Store) Migrate(ctx context.Context) error {
 				continue
 			}
 		}
-		b, e := migrationFS.ReadFile("migrations/" + entry.Name())
-		if e != nil {
+		if e = s.applyMigration(ctx, migration); e != nil {
 			return e
 		}
-		tx, e := s.db.BeginTx(ctx, nil)
-		if e != nil {
-			return e
-		}
-		defer tx.Rollback()
-		if _, e = tx.ExecContext(ctx, string(b)); e != nil {
-			return fmt.Errorf("apply migration %03d: %w", v, e)
-		}
-		if _, e = tx.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES(?)", v); e != nil {
-			return e
-		}
-		if e = tx.Commit(); e != nil {
-			return e
-		}
+	}
+	return nil
+}
+
+func (s *Store) applyMigration(ctx context.Context, migration migration) error {
+	tx, e := s.db.BeginTx(ctx, nil)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	if _, e = tx.ExecContext(ctx, migration.sql); e != nil {
+		return fmt.Errorf("apply migration %03d: %w", migration.version, e)
+	}
+	if _, e = tx.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES(?)", migration.version); e != nil {
+		return fmt.Errorf("record migration %03d: %w", migration.version, e)
+	}
+	if e = tx.Commit(); e != nil {
+		return fmt.Errorf("commit migration %03d: %w", migration.version, e)
 	}
 	return nil
 }
@@ -115,7 +144,7 @@ func (s *Store) Save(ctx context.Context, x domain.Scan) error {
 		}
 		switch v := o.Value.(type) {
 		case domain.RPCTransportResult:
-			_, e = tx.ExecContext(ctx, `INSERT INTO observation_bitcoin_rpc_transport(observation_id,reached,authenticated,category) VALUES(?,?,?,?)`, o.ID, b(v.Reached), b(v.Authenticated), v.Category)
+			_, e = tx.ExecContext(ctx, `INSERT INTO observation_bitcoin_rpc_transport(observation_id,reached,authentication,category) VALUES(?,?,?,?)`, o.ID, b(v.Reached), v.Authentication, v.Category)
 		case domain.BitcoinChainState:
 			_, e = tx.ExecContext(ctx, `INSERT INTO observation_bitcoin_chain_state(observation_id,blocks,headers,verification_progress,initial_block_download,tip_time) VALUES(?,?,?,?,?,?)`, o.ID, v.Blocks, v.Headers, v.VerificationProgress, b(v.InitialBlockDownload), ts(v.TipTime))
 		case domain.FilesystemCapacity:
@@ -178,6 +207,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Scan, error) {
 	if e != nil {
 		return x, e
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var p domain.ProbeExecution
 		var st, ft string
@@ -227,19 +257,29 @@ func (s *Store) loadObservations(ctx context.Context, id string) ([]domain.Obser
 		if e != nil {
 			return nil, e
 		}
+		storedKind, e := s.typedValueKind(ctx, o.ID)
+		if e != nil {
+			return nil, e
+		}
+		if storedKind != o.Kind {
+			return nil, fmt.Errorf("observation typed value kind mismatch")
+		}
 		switch o.Kind {
 		case "bitcoin.rpc.transport":
-			var reached, auth int
+			var reached int
+			var auth domain.AuthenticationState
 			var cat string
-			e = s.db.QueryRowContext(ctx, `SELECT reached,authenticated,category FROM observation_bitcoin_rpc_transport WHERE observation_id=?`, o.ID).Scan(&reached, &auth, &cat)
-			o.Value = domain.RPCTransportResult{Reached: reached != 0, Authenticated: auth != 0, Category: cat}
+			e = s.db.QueryRowContext(ctx, `SELECT reached,authentication,category FROM observation_bitcoin_rpc_transport WHERE observation_id=?`, o.ID).Scan(&reached, &auth, &cat)
+			o.Value = domain.RPCTransportResult{Reached: reached != 0, Authentication: auth, Category: cat}
 		case "bitcoin.chain.state":
 			var v domain.BitcoinChainState
 			var ibd int
 			var tip string
 			e = s.db.QueryRowContext(ctx, `SELECT blocks,headers,verification_progress,initial_block_download,tip_time FROM observation_bitcoin_chain_state WHERE observation_id=?`, o.ID).Scan(&v.Blocks, &v.Headers, &v.VerificationProgress, &ibd, &tip)
 			v.InitialBlockDownload = ibd != 0
-			v.TipTime, _ = parse(tip)
+			if e == nil {
+				v.TipTime, e = parse(tip)
+			}
 			o.Value = v
 		case "filesystem.capacity":
 			var v domain.FilesystemCapacity
@@ -266,6 +306,36 @@ func (s *Store) loadObservations(ctx context.Context, id string) ([]domain.Obser
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) typedValueKind(ctx context.Context, observationID string) (string, error) {
+	rows, e := s.db.QueryContext(ctx, `
+		SELECT kind FROM (
+			SELECT 'bitcoin.rpc.transport' AS kind FROM observation_bitcoin_rpc_transport WHERE observation_id=?
+			UNION ALL SELECT 'bitcoin.chain.state' FROM observation_bitcoin_chain_state WHERE observation_id=?
+			UNION ALL SELECT 'filesystem.capacity' FROM observation_filesystem_capacity WHERE observation_id=?
+			UNION ALL SELECT 'system.clock.current' FROM observation_clock_state WHERE observation_id=?
+		)`, observationID, observationID, observationID, observationID)
+	if e != nil {
+		return "", e
+	}
+	defer rows.Close()
+	var kinds []string
+	for rows.Next() {
+		var kind string
+		if e = rows.Scan(&kind); e != nil {
+			return "", e
+		}
+		kinds = append(kinds, kind)
+	}
+	if e = rows.Err(); e != nil {
+		return "", e
+	}
+	if len(kinds) != 1 {
+		return "", fmt.Errorf("observation must have exactly one typed value")
+	}
+	return kinds[0], nil
+}
+
 func (s *Store) loadFindings(ctx context.Context, id string) ([]domain.Finding, error) {
 	rows, e := s.db.QueryContext(ctx, `SELECT id,scan_id,code,component_id,status,applicability,severity,confidence,evaluator_id,evaluator_version,evaluated_at,coverage_role FROM findings WHERE scan_id=? ORDER BY id`, id)
 	if e != nil {
@@ -290,9 +360,14 @@ func (s *Store) loadFindings(ctx context.Context, id string) ([]domain.Finding, 
 		for rr.Next() {
 			var r domain.UnknownReason
 			if e = rr.Scan(&r.Code, &r.Stage, &r.Retryability, &r.Resolution, &r.CapabilityID, &r.ProviderID); e != nil {
+				rr.Close()
 				return nil, e
 			}
 			f.Reasons = append(f.Reasons, r)
+		}
+		if e = rr.Err(); e != nil {
+			rr.Close()
+			return nil, e
 		}
 		rr.Close()
 		er, e := s.db.QueryContext(ctx, `SELECT observation_id,observation_kind,evidence_role FROM finding_evidence WHERE finding_id=? ORDER BY ordinal`, f.ID)
@@ -302,9 +377,14 @@ func (s *Store) loadFindings(ctx context.Context, id string) ([]domain.Finding, 
 		for er.Next() {
 			var r domain.EvidenceRef
 			if e = er.Scan(&r.ObservationID, &r.ObservationKind, &r.Role); e != nil {
+				er.Close()
 				return nil, e
 			}
 			f.Evidence = append(f.Evidence, r)
+		}
+		if e = er.Err(); e != nil {
+			er.Close()
+			return nil, e
 		}
 		er.Close()
 		mr, e := s.db.QueryContext(ctx, `SELECT observation_kind,problem,reason_code FROM finding_missing_evidence WHERE finding_id=? ORDER BY ordinal`, f.ID)
@@ -314,9 +394,14 @@ func (s *Store) loadFindings(ctx context.Context, id string) ([]domain.Finding, 
 		for mr.Next() {
 			var r domain.MissingEvidence
 			if e = mr.Scan(&r.ObservationKind, &r.Problem, &r.ReasonCode); e != nil {
+				mr.Close()
 				return nil, e
 			}
 			f.MissingEvidence = append(f.MissingEvidence, r)
+		}
+		if e = mr.Err(); e != nil {
+			mr.Close()
+			return nil, e
 		}
 		mr.Close()
 		e = s.db.QueryRowContext(ctx, `SELECT max_tip_age_seconds,min_verification_progress,max_header_lag,warning_available_percent,failure_available_percent FROM finding_thresholds WHERE finding_id=?`, f.ID).Scan(&f.Thresholds.MaxTipAgeSeconds, &f.Thresholds.MinVerificationProgress, &f.Thresholds.MaxHeaderLag, &f.Thresholds.WarningAvailablePercent, &f.Thresholds.FailureAvailablePercent)

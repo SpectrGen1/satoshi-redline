@@ -203,13 +203,51 @@ type ObservationValue interface {
 	observationValue()
 	Validate() error
 }
+
+type AuthenticationState string
+
+const (
+	AuthenticationAccepted      AuthenticationState = "accepted"
+	AuthenticationRejectedState AuthenticationState = "rejected"
+	AuthenticationUnknown       AuthenticationState = "unknown"
+)
+
 type RPCTransportResult struct {
-	Reached, Authenticated bool
-	Category               string
+	Reached        bool
+	Authentication AuthenticationState
+	Category       string
 }
 
 func (RPCTransportResult) observationValue() {}
-func (RPCTransportResult) Validate() error   { return nil }
+func (v RPCTransportResult) Validate() error {
+	switch v.Authentication {
+	case AuthenticationAccepted, AuthenticationRejectedState:
+		if !v.Reached {
+			return fmt.Errorf("authentication evidence without reached endpoint")
+		}
+	case AuthenticationUnknown:
+	default:
+		return fmt.Errorf("invalid authentication state")
+	}
+	switch v.Category {
+	case "valid_json_rpc_response",
+		string(NotConfigured),
+		string(SecretReferenceUnavailable),
+		string(PermissionDenied),
+		string(Timeout),
+		string(Cancelled),
+		string(ProtocolError),
+		string(InvalidResponse),
+		string(UnsupportedSchema),
+		string(AuthenticationRejected),
+		string(ConnectionRefused),
+		string(RouteUnreachable),
+		string(RPCError):
+	default:
+		return fmt.Errorf("invalid RPC transport category")
+	}
+	return nil
+}
 
 type BitcoinChainState struct {
 	Blocks, Headers      int64
@@ -259,6 +297,22 @@ func (o Observation) Validate() error {
 	if o.ID == "" || o.ScanID == "" || o.ProbeExecutionID == "" || o.ComponentID == "" || o.Kind == "" || o.SchemaVersion == "" || o.CapabilityID == "" || o.ProviderID == "" || o.Sensitivity == "" || o.ObservedAt.IsZero() || o.Value == nil {
 		return fmt.Errorf("invalid observation envelope")
 	}
+	expected := ""
+	switch o.Value.(type) {
+	case RPCTransportResult:
+		expected = "bitcoin.rpc.transport"
+	case BitcoinChainState:
+		expected = "bitcoin.chain.state"
+	case FilesystemCapacity:
+		expected = "filesystem.capacity"
+	case ClockState:
+		expected = "system.clock.current"
+	default:
+		return fmt.Errorf("unknown observation value")
+	}
+	if o.Kind != expected {
+		return fmt.Errorf("observation kind does not match value")
+	}
 	return o.Value.Validate()
 }
 
@@ -273,6 +327,11 @@ type ProbeExecution struct {
 func (p ProbeExecution) Validate() error {
 	if p.ID == "" || p.ScanID == "" || p.ProbeID == "" || p.ProbeVersion == "" || p.StartedAt.IsZero() || p.FinishedAt.Before(p.StartedAt) || p.DurationMS < 0 {
 		return fmt.Errorf("invalid probe execution")
+	}
+	switch p.Outcome {
+	case ExecutionCompleted, ExecutionPartial, ExecutionUnavailable, ExecutionFailed, ExecutionCancelled:
+	default:
+		return fmt.Errorf("invalid probe execution outcome")
 	}
 	return nil
 }
@@ -299,8 +358,21 @@ func (f Finding) Validate() error {
 	if f.Status == Unknown && (len(f.Reasons) == 0 || len(f.MissingEvidence) == 0) {
 		return fmt.Errorf("unknown finding lacks structured evidence")
 	}
+	for _, reason := range f.Reasons {
+		if reason.Code == "" || reason.Stage == "" || reason.Retryability == "" || reason.Resolution == "" {
+			return fmt.Errorf("unknown reason is incomplete")
+		}
+	}
+	for _, missing := range f.MissingEvidence {
+		if missing.ObservationKind == "" || missing.ObservationKind == "required" || missing.Problem == "" || missing.ReasonCode == "" {
+			return fmt.Errorf("missing evidence is not specific")
+		}
+	}
 	if f.Status != Unknown && f.Applicability == Applicable && len(f.Evidence) == 0 {
 		return fmt.Errorf("assessed finding lacks evidence")
+	}
+	if f.Status != Unknown && (len(f.Reasons) != 0 || len(f.MissingEvidence) != 0) {
+		return fmt.Errorf("assessed finding contains unknown evidence")
 	}
 	return nil
 }
@@ -325,7 +397,9 @@ type Scan struct {
 }
 
 func (s Scan) Validate() error {
-	if s.ID == "" || s.StartedAt.IsZero() || s.FinishedAt.Before(s.StartedAt) {
+	if s.ID == "" || s.StartedAt.IsZero() || s.FinishedAt.Before(s.StartedAt) ||
+		s.Summary.Coverage.ApplicableRequired < 0 || s.Summary.Coverage.AssessedRequired < 0 || s.Summary.Coverage.UnknownRequired < 0 ||
+		s.Summary.Coverage.AssessedRequired+s.Summary.Coverage.UnknownRequired != s.Summary.Coverage.ApplicableRequired {
 		return fmt.Errorf("invalid scan")
 	}
 	exec := map[string]bool{}
@@ -333,27 +407,73 @@ func (s Scan) Validate() error {
 		if e := p.Validate(); e != nil {
 			return e
 		}
+		if p.ScanID != s.ID || exec[p.ID] {
+			return fmt.Errorf("invalid execution reference")
+		}
 		exec[p.ID] = true
 	}
-	obs := map[string]bool{}
+	obs := map[string]string{}
 	for _, o := range s.Observations {
 		if e := o.Validate(); e != nil {
 			return e
 		}
+		if o.ScanID != s.ID {
+			return fmt.Errorf("observation belongs to another scan")
+		}
 		if !exec[o.ProbeExecutionID] {
 			return fmt.Errorf("observation execution missing")
 		}
-		obs[o.ID] = true
+		if _, duplicate := obs[o.ID]; duplicate {
+			return fmt.Errorf("duplicate observation")
+		}
+		obs[o.ID] = o.Kind
 	}
+	findings := map[string]bool{}
+	var applicable, assessed, unknown int
 	for _, f := range s.Findings {
 		if e := f.Validate(); e != nil {
 			return e
 		}
-		for _, r := range f.Evidence {
-			if !obs[r.ObservationID] {
-				return fmt.Errorf("finding evidence missing")
+		if f.ScanID != s.ID || findings[f.ID] {
+			return fmt.Errorf("invalid finding reference")
+		}
+		findings[f.ID] = true
+		if f.Role == Required && f.Applicability == Applicable {
+			applicable++
+			if f.Status == Unknown {
+				unknown++
+			} else {
+				assessed++
 			}
 		}
+		for _, r := range f.Evidence {
+			kind, exists := obs[r.ObservationID]
+			if !exists {
+				return fmt.Errorf("finding evidence missing")
+			}
+			if kind != r.ObservationKind {
+				return fmt.Errorf("finding evidence kind mismatch")
+			}
+		}
+	}
+	if applicable != s.Summary.Coverage.ApplicableRequired || assessed != s.Summary.Coverage.AssessedRequired || unknown != s.Summary.Coverage.UnknownRequired {
+		return fmt.Errorf("coverage does not match findings")
+	}
+	switch s.Summary.Coverage.State {
+	case Complete:
+		if s.Summary.Coverage.UnknownRequired != 0 {
+			return fmt.Errorf("complete coverage contains unknown findings")
+		}
+	case Partial, Minimal:
+		if s.Summary.Coverage.AssessedRequired == 0 || s.Summary.Coverage.UnknownRequired == 0 {
+			return fmt.Errorf("partial coverage counts are inconsistent")
+		}
+	case Unavailable:
+		if s.Summary.Coverage.AssessedRequired != 0 {
+			return fmt.Errorf("unavailable coverage contains assessed findings")
+		}
+	default:
+		return fmt.Errorf("invalid coverage state")
 	}
 	return nil
 }

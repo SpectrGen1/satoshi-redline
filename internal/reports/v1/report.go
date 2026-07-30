@@ -71,9 +71,9 @@ type ObservationDTO struct {
 	Filesystem       *FilesystemDTO   `json:"filesystem_capacity,omitempty"`
 }
 type RPCTransportDTO struct {
-	Reached       bool   `json:"reached"`
-	Authenticated bool   `json:"authenticated"`
-	Category      string `json:"category"`
+	Reached        bool   `json:"reached"`
+	Authentication string `json:"authentication"`
+	Category       string `json:"category"`
 }
 type ChainDTO struct {
 	Blocks               int64   `json:"blocks"`
@@ -140,7 +140,7 @@ func FromDomain(x domain.Scan) Report {
 		d := ObservationDTO{ID: o.ID, ProbeExecutionID: o.ProbeExecutionID, ComponentID: o.ComponentID, Kind: o.Kind, SchemaVersion: o.SchemaVersion, ObservedAt: o.ObservedAt.UTC().Format(time.RFC3339), CapabilityID: o.CapabilityID, ProviderID: o.ProviderID, Sensitivity: o.Sensitivity}
 		switch v := o.Value.(type) {
 		case domain.RPCTransportResult:
-			d.RPCTransport = &RPCTransportDTO{v.Reached, v.Authenticated, v.Category}
+			d.RPCTransport = &RPCTransportDTO{v.Reached, string(v.Authentication), v.Category}
 		case domain.BitcoinChainState:
 			d.ChainState = &ChainDTO{v.Blocks, v.Headers, v.VerificationProgress, v.InitialBlockDownload, v.TipTime.UTC().Format(time.RFC3339)}
 		case domain.FilesystemCapacity:
