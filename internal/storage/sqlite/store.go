@@ -3,12 +3,17 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/domain"
 	_ "modernc.org/sqlite"
+	"strings"
 	"time"
 )
+
+//go:embed migrations/*.sql
+var migrationFS embed.FS
 
 type Store struct{ db *sql.DB }
 
@@ -17,15 +22,46 @@ func Open(path string) (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
+	if _, e = db.Exec(`PRAGMA foreign_keys = ON`); e != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", e)
+	}
 	s := &Store{db}
-	return s, s.Migrate(context.Background())
+	if e = s.Migrate(context.Background()); e != nil {
+		_ = db.Close()
+		return nil, e
+	}
+	return s, nil
 }
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) Migrate(ctx context.Context) error {
-	_, e := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS scans(id TEXT PRIMARY KEY,started_at TEXT NOT NULL,finished_at TEXT NOT NULL,status TEXT NOT NULL,health TEXT NOT NULL,coverage_state TEXT NOT NULL,applicable_required INTEGER NOT NULL,assessed_required INTEGER NOT NULL,unknown_required INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS probe_executions(id TEXT PRIMARY KEY,scan_id TEXT NOT NULL,probe_id TEXT NOT NULL,outcome TEXT NOT NULL,started_at TEXT NOT NULL,finished_at TEXT NOT NULL,duration_ms INTEGER NOT NULL,reason TEXT NOT NULL); CREATE TABLE IF NOT EXISTS observations(id TEXT PRIMARY KEY,scan_id TEXT NOT NULL,kind TEXT NOT NULL,component_id TEXT NOT NULL,observed_at TEXT NOT NULL,rpc_reachable INTEGER,blocks INTEGER,headers INTEGER,verification_progress REAL,initial_block_download INTEGER,tip_time TEXT,total_bytes INTEGER,available_bytes INTEGER,read_only INTEGER,mount_present INTEGER); CREATE TABLE IF NOT EXISTS findings(id TEXT PRIMARY KEY,scan_id TEXT NOT NULL,code TEXT NOT NULL,component_id TEXT NOT NULL,status TEXT NOT NULL,applicability TEXT NOT NULL,reasons TEXT NOT NULL,evaluator TEXT NOT NULL,provenance TEXT NOT NULL,evaluated_at TEXT NOT NULL,required INTEGER NOT NULL);`)
-	return e
+	var version int
+	err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_migrations WHERE version=1`).Scan(&version)
+	if err == nil {
+		return nil
+	}
+	if err != sql.ErrNoRows && !isMissingTable(err) {
+		return fmt.Errorf("read migration state: %w", err)
+	}
+	data, e := migrationFS.ReadFile("migrations/001_initial.sql")
+	if e != nil {
+		return fmt.Errorf("read migration: %w", e)
+	}
+	tx, e := s.db.BeginTx(ctx, nil)
+	if e != nil {
+		return fmt.Errorf("begin migration: %w", e)
+	}
+	defer tx.Rollback()
+	if _, e = tx.ExecContext(ctx, string(data)); e != nil {
+		return fmt.Errorf("apply migration 001: %w", e)
+	}
+	if _, e = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(1)`); e != nil {
+		return fmt.Errorf("record migration: %w", e)
+	}
+	return tx.Commit()
 }
-func ts(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+func isMissingTable(err error) bool { return strings.Contains(err.Error(), "no such table") }
+func ts(t time.Time) string         { return t.UTC().Format(time.RFC3339Nano) }
 func bi(p *bool) any {
 	if p == nil {
 		return nil
@@ -40,28 +76,31 @@ func (s *Store) Save(ctx context.Context, x domain.Scan) error {
 	if e != nil {
 		return e
 	}
-	for _, p := range x.Executions {
-		_, e = tx.ExecContext(ctx, `INSERT INTO probe_executions VALUES(?,?,?,?,?,?,?,?)`, p.ID, p.ScanID, p.ProbeID, p.Outcome, ts(p.StartedAt), ts(p.FinishedAt), p.DurationMS, p.Reason)
-		if e != nil {
-			return e
-		}
-	}
 	defer tx.Rollback()
 	_, e = tx.ExecContext(ctx, `INSERT INTO scans VALUES(?,?,?,?,?,?,?,?,?)`, x.ID, ts(x.StartedAt), ts(x.FinishedAt), x.Status, x.Summary.Health, x.Summary.Coverage.State, x.Summary.Coverage.ApplicableRequired, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.UnknownRequired)
 	if e != nil {
-		return e
+		return fmt.Errorf("insert scan: %w", e)
+	}
+	for _, p := range x.Executions {
+		_, e = tx.ExecContext(ctx, `INSERT INTO probe_executions VALUES(?,?,?,?,?,?,?,?)`, p.ID, p.ScanID, p.ProbeID, p.Outcome, ts(p.StartedAt), ts(p.FinishedAt), p.DurationMS, p.Reason)
+		if e != nil {
+			return fmt.Errorf("insert probe execution: %w", e)
+		}
 	}
 	for _, o := range x.Observations {
 		_, e = tx.ExecContext(ctx, `INSERT INTO observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.ID, o.ScanID, o.Kind, o.ComponentID, ts(o.ObservedAt), bi(o.RPCReachable), o.Blocks, o.Headers, o.VerificationProgress, bi(o.InitialBlockDownload), nullableTime(o.TipTime), o.TotalBytes, o.AvailableBytes, bi(o.ReadOnly), bi(o.MountPresent))
 		if e != nil {
-			return e
+			return fmt.Errorf("insert observation: %w", e)
 		}
 	}
 	for _, f := range x.Findings {
-		r, _ := json.Marshal(f.Reasons)
+		r, err := json.Marshal(f.Reasons)
+		if err != nil {
+			return fmt.Errorf("encode finding reasons: %w", err)
+		}
 		_, e = tx.ExecContext(ctx, `INSERT INTO findings VALUES(?,?,?,?,?,?,?,?,?,?,?)`, f.ID, f.ScanID, f.Code, f.ComponentID, f.Status, f.Applicability, string(r), f.Evaluator, f.Provenance, ts(f.EvaluatedAt), boolInt(f.Required))
 		if e != nil {
-			return e
+			return fmt.Errorf("insert finding: %w", e)
 		}
 	}
 	return tx.Commit()
@@ -87,8 +126,14 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Scan, error) {
 		return x, e
 	}
 	x.Summary.ComponentID = "bitcoin.primary"
-	x.StartedAt, _ = time.Parse(time.RFC3339Nano, st)
-	x.FinishedAt, _ = time.Parse(time.RFC3339Nano, ft)
+	x.StartedAt, e = time.Parse(time.RFC3339Nano, st)
+	if e != nil {
+		return x, fmt.Errorf("parse scan start: %w", e)
+	}
+	x.FinishedAt, e = time.Parse(time.RFC3339Nano, ft)
+	if e != nil {
+		return x, fmt.Errorf("parse scan finish: %w", e)
+	}
 	x.Observations, e = s.observations(ctx, id)
 	if e != nil {
 		return x, e
@@ -112,13 +157,19 @@ func (s *Store) observations(ctx context.Context, id string) ([]domain.Observati
 		if e != nil {
 			return nil, e
 		}
-		o.ObservedAt, _ = time.Parse(time.RFC3339Nano, at)
+		o.ObservedAt, e = time.Parse(time.RFC3339Nano, at)
+		if e != nil {
+			return nil, fmt.Errorf("parse observation time: %w", e)
+		}
 		o.RPCReachable = np(rr)
 		o.InitialBlockDownload = np(ibd)
 		o.ReadOnly = np(ro)
 		o.MountPresent = np(mp)
 		if tip.Valid {
-			t, _ := time.Parse(time.RFC3339Nano, tip.String)
+			t, parseErr := time.Parse(time.RFC3339Nano, tip.String)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse tip time: %w", parseErr)
+			}
 			o.TipTime = &t
 		}
 		out = append(out, o)
@@ -150,7 +201,10 @@ func (s *Store) findings(ctx context.Context, id string) ([]domain.Finding, erro
 		if e = json.Unmarshal([]byte(rs), &f.Reasons); e != nil {
 			return nil, fmt.Errorf("invalid stored reason")
 		}
-		f.EvaluatedAt, _ = time.Parse(time.RFC3339Nano, at)
+		f.EvaluatedAt, e = time.Parse(time.RFC3339Nano, at)
+		if e != nil {
+			return nil, fmt.Errorf("parse finding time: %w", e)
+		}
 		f.Required = req != 0
 		out = append(out, f)
 	}

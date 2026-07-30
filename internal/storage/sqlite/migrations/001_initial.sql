@@ -1,0 +1,7 @@
+CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+CREATE TABLE scans (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT NOT NULL, status TEXT NOT NULL, health TEXT NOT NULL, coverage_state TEXT NOT NULL, applicable_required INTEGER NOT NULL, assessed_required INTEGER NOT NULL, unknown_required INTEGER NOT NULL);
+CREATE TABLE probe_executions (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scans(id), probe_id TEXT NOT NULL, outcome TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT NOT NULL, duration_ms INTEGER NOT NULL, reason TEXT NOT NULL);
+CREATE TABLE observations (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scans(id), kind TEXT NOT NULL, component_id TEXT NOT NULL, observed_at TEXT NOT NULL, rpc_reachable INTEGER, blocks INTEGER, headers INTEGER, verification_progress REAL, initial_block_download INTEGER, tip_time TEXT, total_bytes INTEGER, available_bytes INTEGER, read_only INTEGER, mount_present INTEGER);
+CREATE TABLE findings (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES scans(id), code TEXT NOT NULL, component_id TEXT NOT NULL, status TEXT NOT NULL, applicability TEXT NOT NULL, reasons TEXT NOT NULL, evaluator TEXT NOT NULL, provenance TEXT NOT NULL, evaluated_at TEXT NOT NULL, required INTEGER NOT NULL);
+CREATE INDEX observations_scan_id_idx ON observations(scan_id);
+CREATE INDEX findings_scan_id_idx ON findings(scan_id);
