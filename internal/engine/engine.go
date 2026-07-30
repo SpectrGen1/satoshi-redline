@@ -5,6 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/capabilities"
 	"github.com/satoshi-redline/redline/internal/capabilities/bitcoinrpc"
@@ -12,8 +15,6 @@ import (
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/evaluation"
 	"github.com/satoshi-redline/redline/internal/probes"
-	"strings"
-	"time"
 )
 
 type Runner struct {
@@ -46,30 +47,39 @@ func (p filesystemProvider) Stat(ctx context.Context) (capabilities.FilesystemCa
 
 // ScanAndPersist is the single application workflow shared by CLI and daemon.
 func (r Runner) ScanAndPersist(ctx context.Context, store ScanStore) (domain.Scan, error) {
-	x, e := r.Scan(ctx)
+	x, e := r.execute(ctx)
 	if e != nil {
+		r.failed(x.ID, "engine_failed")
 		return x, e
 	}
 	if e = store.Save(ctx, x); e != nil {
-		r.emit(Event{ID: x.ID + "-failed", Type: "scan.failed", ScanID: x.ID, OccurredAt: r.now(), Outcome: "persistence_failed"})
+		r.failed(x.ID, "persistence_failed")
 		return x, e
 	}
+	r.completed(x)
 	return x, nil
 }
 
 func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
+	x, err := r.execute(ctx)
+	if err != nil {
+		r.failed(x.ID, "engine_failed")
+		return x, err
+	}
+	r.completed(x)
+	return x, nil
+}
+
+// execute performs collection and evaluation without emitting a terminal event.
+// The workflow owner emits exactly one terminal event after all of its work,
+// including persistence when applicable, has succeeded or failed.
+func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 	now := r.now()
 	id, err := newID()
 	if err != nil {
 		return domain.Scan{}, err
 	}
 	scan := domain.Scan{ID: id, StartedAt: now, Status: "running"}
-	succeeded := false
-	defer func() {
-		if !succeeded {
-			r.emit(Event{ID: id + "-failed", Type: "scan.failed", ScanID: id, OccurredAt: r.now(), Outcome: "engine_failed"})
-		}
-	}()
 	r.emit(Event{ID: id + "-started", Type: "scan.started", ScanID: id, OccurredAt: now})
 	var rpcObs, transportObs, fsObs *domain.Observation
 	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())
@@ -93,15 +103,15 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 		ctxErr := probeCtx.Err()
 		cancel()
 		done := r.now()
-		if ctxErr == context.DeadlineExceeded {
+		parentErr := ctx.Err()
+		if parentErr != nil {
+			result.Reason = domain.Cancelled
+		} else if ctxErr == context.DeadlineExceeded {
 			result.Reason = domain.Timeout
 		} else if ctxErr == context.Canceled {
 			result.Reason = domain.Cancelled
 		}
-		outcome := executionOutcome(result.Reason)
-		if len(result.Values) > 0 && result.Reason != "" {
-			outcome = domain.ExecutionPartial
-		}
+		outcome := executionOutcome(result, parentErr, ctxErr)
 		scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: executionID, ScanID: id, ProbeID: d.ID, ProbeVersion: d.Version, Outcome: outcome, StartedAt: started, FinishedAt: done, DurationMS: done.Sub(started).Milliseconds(), Limitation: result.Reason})
 		r.emit(Event{ID: executionID + "-completed", Type: "scan.probe.completed", ScanID: id, OccurredAt: done, ProbeID: d.ID, Outcome: string(outcome)})
 		declared := map[string]bool{}
@@ -147,9 +157,18 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	scan.Summary = evaluation.Summary(scan.Findings)
 	scan.FinishedAt = r.now()
 	scan.Status = "completed"
-	r.emit(Event{ID: id + "-completed", Type: "scan.completed", ScanID: id, OccurredAt: scan.FinishedAt, Outcome: scan.Status})
-	succeeded = true
 	return scan, nil
+}
+
+func (r Runner) completed(scan domain.Scan) {
+	r.emit(Event{ID: scan.ID + "-completed", Type: "scan.completed", ScanID: scan.ID, OccurredAt: scan.FinishedAt, Outcome: scan.Status})
+}
+
+func (r Runner) failed(scanID, outcome string) {
+	if scanID == "" {
+		return
+	}
+	r.emit(Event{ID: scanID + "-failed", Type: "scan.failed", ScanID: scanID, OccurredAt: r.now(), Outcome: outcome})
 }
 func (r Runner) now() time.Time {
 	if r.Now != nil {
@@ -164,14 +183,20 @@ func newID() (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
-func executionOutcome(reason domain.UnknownReasonCode) domain.ExecutionOutcome {
-	if reason == "" {
-		return domain.ExecutionCompleted
-	}
-	if reason == domain.Cancelled || reason == domain.Timeout {
+func executionOutcome(result probes.Result, parentErr, probeErr error) domain.ExecutionOutcome {
+	if parentErr != nil || probeErr == context.Canceled {
 		return domain.ExecutionCancelled
 	}
-	if reason == domain.NotConfigured || reason == domain.SecretReferenceUnavailable || reason == domain.PermissionDenied || reason == domain.RequiredObservationMissing {
+	if probeErr == context.DeadlineExceeded {
+		return domain.ExecutionFailed
+	}
+	if len(result.Values) > 0 && result.Reason != "" {
+		return domain.ExecutionPartial
+	}
+	if result.Reason == "" {
+		return domain.ExecutionCompleted
+	}
+	if result.Reason == domain.NotConfigured || result.Reason == domain.SecretReferenceUnavailable || result.Reason == domain.PermissionDenied || result.Reason == domain.RequiredObservationMissing {
 		return domain.ExecutionUnavailable
 	}
 	return domain.ExecutionFailed

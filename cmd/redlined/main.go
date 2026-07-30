@@ -9,6 +9,7 @@ import (
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/engine"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -48,8 +49,16 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 }
 func serve(ctx context.Context, server *http.Server) error {
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return fmt.Errorf("server failed")
+	}
+	return serveListener(ctx, server, listener)
+}
+
+func serveListener(ctx context.Context, server *http.Server, listener net.Listener) error {
 	errCh := make(chan error, 1)
-	go func() { errCh <- server.ListenAndServe() }()
+	go func() { errCh <- server.Serve(listener) }()
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

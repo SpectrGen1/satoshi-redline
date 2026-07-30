@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/domain"
+	"github.com/satoshi-redline/redline/internal/probes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +31,10 @@ func (e *eventRecorder) Emit(v Event) {
 type failingStore struct{}
 
 func (failingStore) Save(context.Context, domain.Scan) error { return errors.New("CANARY_SECRET") }
+
+type successfulStore struct{}
+
+func (successfulStore) Save(context.Context, domain.Scan) error { return nil }
 
 func TestScanSynchronizedHealthy(t *testing.T) {
 	now := time.Now().UTC()
@@ -87,22 +92,79 @@ func TestScanFailedEventOnPersistenceFailure(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected error")
 	}
-	found := false
+	var terminal []string
 	for _, v := range sink.events {
-		if v.Type == "scan.failed" {
-			found = true
+		if v.Type == "scan.failed" || v.Type == "scan.completed" {
+			terminal = append(terminal, v.Type)
 		}
 		if strings.Contains(v.Outcome, "CANARY_SECRET") {
 			t.Fatal("error leaked into event")
 		}
 	}
-	if !found {
-		t.Fatal("scan.failed not emitted")
+	if fmt.Sprint(terminal) != "[scan.failed]" {
+		t.Fatalf("terminal events = %v", terminal)
 	}
 }
 func TestEventSinkCannotBreakScan(t *testing.T) {
 	c := app.DefaultConfig()
 	if _, e := (Runner{Config: c, Events: &eventRecorder{panicOnEmit: true}}).Scan(context.Background()); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestScanTerminalEventSequences(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(Runner) error
+	}{
+		{"scan", func(r Runner) error { _, err := r.Scan(context.Background()); return err }},
+		{"scan and persist", func(r Runner) error {
+			_, err := r.ScanAndPersist(context.Background(), successfulStore{})
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &eventRecorder{}
+			if err := tt.run(Runner{Config: app.DefaultConfig(), Events: sink}); err != nil {
+				t.Fatal(err)
+			}
+			if len(sink.events) == 0 || sink.events[0].Type != "scan.started" {
+				t.Fatalf("events = %#v", sink.events)
+			}
+			var terminal []string
+			for _, event := range sink.events {
+				if event.Type == "scan.completed" || event.Type == "scan.failed" {
+					terminal = append(terminal, event.Type)
+				}
+			}
+			if fmt.Sprint(terminal) != "[scan.completed]" {
+				t.Fatalf("terminal events = %v", terminal)
+			}
+		})
+	}
+}
+
+func TestExecutionOutcomeClassification(t *testing.T) {
+	observation := domain.Observation{ID: "usable"}
+	tests := []struct {
+		name                string
+		result              probes.Result
+		parentErr, probeErr error
+		want                domain.ExecutionOutcome
+	}{
+		{"completed", probes.Result{}, nil, nil, domain.ExecutionCompleted},
+		{"unavailable", probes.Result{Reason: domain.RequiredObservationMissing}, nil, nil, domain.ExecutionUnavailable},
+		{"partial", probes.Result{Values: []domain.Observation{observation}, Reason: domain.ProtocolError}, nil, nil, domain.ExecutionPartial},
+		{"provider failure", probes.Result{Reason: domain.ProtocolError}, nil, nil, domain.ExecutionFailed},
+		{"probe deadline", probes.Result{Reason: domain.Timeout}, nil, context.DeadlineExceeded, domain.ExecutionFailed},
+		{"caller cancellation", probes.Result{Reason: domain.Cancelled}, context.Canceled, context.Canceled, domain.ExecutionCancelled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := executionOutcome(tt.result, tt.parentErr, tt.probeErr); got != tt.want {
+				t.Fatalf("got %q want %q", got, tt.want)
+			}
+		})
 	}
 }

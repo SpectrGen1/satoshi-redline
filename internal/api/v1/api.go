@@ -3,6 +3,7 @@ package v1
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/satoshi-redline/redline/internal/buildinfo"
 	"github.com/satoshi-redline/redline/internal/domain"
@@ -16,10 +17,12 @@ import (
 )
 
 type Server struct {
-	Runner engine.Runner
-	Store  *sqlite.Store
-	mu     sync.Mutex
-	hub    *eventHub
+	Runner             engine.Runner
+	Store              *sqlite.Store
+	HeartbeatInterval  time.Duration
+	StreamWriteTimeout time.Duration
+	mu                 sync.Mutex
+	hub                *eventHub
 }
 
 func (s *Server) Handler() http.Handler {
@@ -80,7 +83,7 @@ type MetaDTO struct {
 	BuildID                string            `json:"build_id"`
 	APIMajor               int               `json:"api_major"`
 	APIContractRevision    string            `json:"api_contract_revision"`
-	EventSchemaVersion     string            `json:"event_schema_version"`
+	EventSchemaVersion     int               `json:"event_schema_version"`
 	ReportVersionsReadable []int             `json:"report_versions_readable"`
 	ReportVersionsWritable []int             `json:"report_versions_writable"`
 	EnabledFeatures        []string          `json:"enabled_features"`
@@ -96,7 +99,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 500, "catalog_unavailable", "The compiled probe catalog is unavailable.", false)
 		return
 	}
-	d := MetaDTO{buildinfo.Version, buildinfo.BuildID, 1, "1", "v1", []int{1}, []int{1}, []string{"bitcoin_rpc", "filesystem_capacity"}, nil}
+	d := MetaDTO{buildinfo.Version, buildinfo.BuildID, 1, "1", 1, []int{1}, []int{1}, []string{"bitcoin_rpc", "filesystem_capacity"}, nil}
 	for _, p := range c.Probes() {
 		x := p.Descriptor()
 		v := ProbeCatalogDTO{ID: x.ID, Version: x.Version, ScanMode: string(x.Mode), ObservationKinds: append([]string(nil), x.ObservationKinds...)}
@@ -296,7 +299,7 @@ type EventPayloadDTO struct {
 	Outcome     string `json:"outcome,omitempty"`
 }
 type EventDTO struct {
-	SchemaVersion string          `json:"event_schema_version"`
+	SchemaVersion int             `json:"event_schema_version"`
 	EventID       string          `json:"event_id"`
 	EventType     string          `json:"event_type"`
 	OccurredAt    string          `json:"occurred_at"`
@@ -317,19 +320,39 @@ func (s *Server) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	id, ch := s.hub.subscribe()
 	defer s.hub.unsubscribe(id)
-	heartbeat := time.NewTicker(15 * time.Second)
+	heartbeatInterval := s.HeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 15 * time.Second
+	}
+	writeTimeout := s.StreamWriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = 10 * time.Second
+	}
+	controller := http.NewResponseController(w)
+	setDeadline := func() bool {
+		err := controller.SetWriteDeadline(time.Now().Add(writeTimeout))
+		return err == nil || errors.Is(err, http.ErrNotSupported)
+	}
+	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
 	for {
 		select {
 		case e := <-ch:
-			data, err := json.Marshal(EventDTO{"v1", e.ID, e.Type, e.OccurredAt.UTC().Format(time.RFC3339), e.ScanID, EventPayloadDTO{e.ProbeID, e.FindingCode, e.Outcome}})
-			if err != nil {
-				continue
+			data, err := json.Marshal(EventDTO{1, e.ID, e.Type, e.OccurredAt.UTC().Format(time.RFC3339), e.ScanID, EventPayloadDTO{e.ProbeID, e.FindingCode, e.Outcome}})
+			if err != nil || !setDeadline() {
+				return
 			}
-			_, _ = fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", e.ID, e.Type, data)
+			if _, err = fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", e.ID, e.Type, data); err != nil {
+				return
+			}
 			f.Flush()
 		case <-heartbeat.C:
-			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
+			if !setDeadline() {
+				return
+			}
+			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+				return
+			}
 			f.Flush()
 		case <-r.Context().Done():
 			return

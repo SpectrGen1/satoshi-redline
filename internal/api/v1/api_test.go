@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,6 +19,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers/legacy"
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/engine"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
@@ -170,4 +174,72 @@ func TestSSEStreamsMultipleSafeEventsAndUnsubscribes(t *testing.T) {
 	if len(s.hub.subs) != 0 {
 		t.Fatal("subscriber leaked")
 	}
+}
+
+func TestEventJSONConformsToSchema(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	schemaPath := filepath.Join(filepath.Dir(file), "../../../schemas/api/v1/events.schema.json")
+	compiler := jsonschema.NewCompiler()
+	schemaBytes, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schemaDocument any
+	if err = json.Unmarshal(schemaBytes, &schemaDocument); err != nil {
+		t.Fatal(err)
+	}
+	if err := compiler.AddResource("event.json", schemaDocument); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("event.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := EventDTO{SchemaVersion: 1, EventID: "event_1", EventType: "scan.failed", OccurredAt: time.Now().UTC().Format(time.RFC3339), ScanID: "scan_1", Payload: EventPayloadDTO{Outcome: "engine_failed"}}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document any
+	if err = json.Unmarshal(encoded, &document); err != nil {
+		t.Fatal(err)
+	}
+	if err = schema.Validate(document); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSSEHeartbeatsOutliveOrdinaryServerWriteTimeout(t *testing.T) {
+	api := &Server{HeartbeatInterval: 10 * time.Millisecond, StreamWriteTimeout: 60 * time.Millisecond}
+	httpServer := &http.Server{Handler: api.Handler(), WriteTimeout: 20 * time.Millisecond}
+	listener := mustListen(t)
+	done := make(chan error, 1)
+	go func() { done <- httpServer.Serve(listener) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Millisecond)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+listener.Addr().String()+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	_ = httpServer.Close()
+	<-done
+	if bytes.Count(body, []byte(": heartbeat")) < 3 {
+		t.Fatalf("stream did not remain active: %q", body)
+	}
+}
+
+func mustListen(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
 }

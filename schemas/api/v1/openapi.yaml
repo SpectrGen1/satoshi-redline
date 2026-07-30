@@ -74,7 +74,7 @@ components:
         build_id: {type: string}
         api_major: {type: integer, enum: [1]}
         api_contract_revision: {type: string}
-        event_schema_version: {type: string}
+        event_schema_version: {type: integer, enum: [1]}
         report_versions_readable: {type: array, items: {type: integer}}
         report_versions_writable: {type: array, items: {type: integer}}
         enabled_features: {type: array, items: {type: string}}
