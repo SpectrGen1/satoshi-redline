@@ -1,9 +1,138 @@
 openapi: 3.0.3
-info: {title: SATOSHI//REDLINE local API, version: v1}
+info:
+  title: SATOSHI//REDLINE local API
+  version: v1
 paths:
-  /api/v1/meta: {get: {responses: {'200': {description: API metadata}}}}
-  /api/v1/scans: {post: {responses: {'200': {description: Completed scan}}}}
-  /api/v1/scans/{scan_id}: {get: {parameters: [{name: scan_id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: Scan summary}}}}
-  /api/v1/scans/{scan_id}/observations: {get: {responses: {'200': {description: Approved normalized observations}}}}
-  /api/v1/scans/{scan_id}/findings: {get: {responses: {'200': {description: Findings}}}}
-  /api/v1/events: {get: {responses: {'200': {description: Server-Sent scan progress}}}}
+  /api/v1/meta:
+    get:
+      operationId: getMeta
+      responses:
+        '200': {description: Build and probe metadata, content: {application/json: {schema: {$ref: '#/components/schemas/Meta'}}}}
+        '405': {$ref: '#/components/responses/Error'}
+  /api/v1/scans:
+    post:
+      operationId: createScan
+      responses:
+        '200': {description: Completed scan, content: {application/json: {schema: {$ref: '#/components/schemas/Scan'}}}}
+        '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /api/v1/scans/{scan_id}:
+    get:
+      operationId: getScan
+      parameters: [{$ref: '#/components/parameters/ScanID'}]
+      responses:
+        '200': {description: Scan summary, content: {application/json: {schema: {$ref: '#/components/schemas/Scan'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '405': {$ref: '#/components/responses/Error'}
+  /api/v1/scans/{scan_id}/observations:
+    get:
+      operationId: getScanObservations
+      parameters: [{$ref: '#/components/parameters/ScanID'}]
+      responses:
+        '200': {description: Typed observations, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Observation'}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/scans/{scan_id}/findings:
+    get:
+      operationId: getScanFindings
+      parameters: [{$ref: '#/components/parameters/ScanID'}]
+      responses:
+        '200': {description: Findings, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Finding'}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/events:
+    get:
+      operationId: streamEvents
+      responses:
+        '200': {description: Versioned scan events, content: {text/event-stream: {schema: {type: string}}}}
+        '405': {$ref: '#/components/responses/Error'}
+components:
+  parameters:
+    ScanID: {name: scan_id, in: path, required: true, schema: {type: string}}
+  responses:
+    Error: {description: Safe typed error, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}}
+  schemas:
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties: {error: {$ref: '#/components/schemas/Error'}}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id, retryable, details]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        request_id: {type: string}
+        retryable: {type: boolean}
+        details: {type: object, additionalProperties: false}
+    Meta:
+      type: object
+      additionalProperties: false
+      required: [product_version, build_id, api_major, api_contract_revision, event_schema_version, report_versions_readable, report_versions_writable, enabled_features, compiled_probe_catalog]
+      properties:
+        product_version: {type: string}
+        build_id: {type: string}
+        api_major: {type: integer, enum: [1]}
+        api_contract_revision: {type: string}
+        event_schema_version: {type: string}
+        report_versions_readable: {type: array, items: {type: integer}}
+        report_versions_writable: {type: array, items: {type: integer}}
+        enabled_features: {type: array, items: {type: string}}
+        compiled_probe_catalog: {type: array, items: {type: object}}
+    Coverage:
+      type: object
+      additionalProperties: false
+      required: [state, applicable_required, assessed_required, unknown_required]
+      properties:
+        state: {type: string, enum: [complete, partial, minimal, unavailable]}
+        applicable_required: {type: integer}
+        assessed_required: {type: integer}
+        unknown_required: {type: integer}
+    Scan:
+      type: object
+      additionalProperties: false
+      required: [id, started_at, finished_at, status, health, coverage]
+      properties:
+        id: {type: string}
+        started_at: {type: string, format: date-time}
+        finished_at: {type: string, format: date-time}
+        status: {type: string}
+        health: {type: string, enum: [healthy, warning, failure, no_conclusion]}
+        coverage: {$ref: '#/components/schemas/Coverage'}
+    Observation:
+      type: object
+      additionalProperties: false
+      required: [id, probe_execution_id, component_id, kind, schema_version, observed_at, capability_id, provider_id, sensitivity]
+      properties:
+        id: {type: string}
+        probe_execution_id: {type: string}
+        component_id: {type: string}
+        kind: {type: string}
+        schema_version: {type: string, enum: [v1]}
+        observed_at: {type: string, format: date-time}
+        capability_id: {type: string}
+        provider_id: {type: string}
+        sensitivity: {type: string}
+        bitcoin_rpc_transport: {type: object}
+        bitcoin_chain_state: {type: object}
+        filesystem_capacity: {type: object}
+    Finding:
+      type: object
+      additionalProperties: false
+      required: [id, code, component_id, status, applicability, severity, confidence, evaluator_id, evaluator_version, evaluated_at, coverage_role, unknown_reasons, evidence, missing_evidence, thresholds]
+      properties:
+        id: {type: string}
+        code: {type: string}
+        component_id: {type: string}
+        status: {type: string, enum: [pass, warning, failure, unknown]}
+        applicability: {type: string, enum: [applicable, not_applicable, undetermined]}
+        severity: {type: string, enum: [none, informational, low, medium, high, critical]}
+        confidence: {type: string, enum: [low, medium, high]}
+        evaluator_id: {type: string}
+        evaluator_version: {type: string}
+        evaluated_at: {type: string, format: date-time}
+        coverage_role: {type: string, enum: [required, optional, informational]}
+        unknown_reasons: {type: array, items: {type: object}}
+        evidence: {type: array, items: {type: object}}
+        missing_evidence: {type: array, items: {type: object}}
+        thresholds: {type: object}

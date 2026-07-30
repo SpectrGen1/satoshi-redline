@@ -65,4 +65,5 @@ func NewCatalog(items ...Probe) (Catalog, error) {
 	sort.Slice(items, func(i, j int) bool { return items[i].Descriptor().ID < items[j].Descriptor().ID })
 	return Catalog{items}, nil
 }
-func (c Catalog) Probes() []Probe { return append([]Probe(nil), c.probes...) }
+func (c Catalog) Probes() []Probe       { return append([]Probe(nil), c.probes...) }
+func CompiledCatalog() (Catalog, error) { return NewCatalog(BitcoinChainState{}, FilesystemCapacity{}) }
