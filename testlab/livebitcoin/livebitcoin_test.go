@@ -115,9 +115,11 @@ func assertExpectedEvidence(t *testing.T, scan domain.Scan) {
 		"filesystem.capacity-pressure": false,
 	}
 	observations := map[string]bool{}
+	transportCategory := "absent"
 	for _, observation := range scan.Observations {
 		observations[observation.Kind] = true
 		if value, ok := observation.Value.(domain.RPCTransportResult); ok {
+			transportCategory = value.Category
 			if !value.Reached || value.Authentication != domain.AuthenticationAccepted {
 				t.Fatal("live RPC transport evidence did not prove an authenticated reached endpoint")
 			}
@@ -142,6 +144,9 @@ func assertExpectedEvidence(t *testing.T, scan domain.Scan) {
 	}
 	for _, kind := range []string{"bitcoin.rpc.transport", "bitcoin.chain.state", "filesystem.capacity"} {
 		if !observations[kind] {
+			if kind == "bitcoin.chain.state" {
+				t.Fatalf("expected typed observation kind %s was absent (transport category %s)", kind, transportCategory)
+			}
 			t.Fatalf("expected typed observation kind %s was absent", kind)
 		}
 	}

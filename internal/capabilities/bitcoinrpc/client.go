@@ -66,12 +66,22 @@ func (c *Client) Chain(ctx context.Context) (ChainInfo, domain.UnknownReasonCode
 		VerificationProgress *float64 `json:"verificationprogress"`
 		InitialBlockDownload *bool    `json:"initialblockdownload"`
 		BestBlockHash        *string  `json:"bestblockhash"`
+		Time                 *int64   `json:"time"`
 	}
 	_, reason, reachable := c.call(ctx, "getblockchaininfo", nil, &result)
 	if reason != "" {
 		return ChainInfo{}, reason, reachable
 	}
-	if result.Blocks == nil || result.Headers == nil || result.VerificationProgress == nil || result.InitialBlockDownload == nil || result.BestBlockHash == nil || *result.BestBlockHash == "" || *result.Blocks < 0 || *result.Headers < *result.Blocks || *result.VerificationProgress < 0 || *result.VerificationProgress > 1 {
+	if result.Blocks == nil || result.Headers == nil || result.VerificationProgress == nil || result.InitialBlockDownload == nil || *result.Blocks < 0 || *result.Headers < *result.Blocks || *result.VerificationProgress < 0 || *result.VerificationProgress > 1 {
+		return ChainInfo{}, domain.InvalidResponse, true
+	}
+	if result.Time != nil {
+		if *result.Time <= 0 {
+			return ChainInfo{}, domain.InvalidResponse, true
+		}
+		return ChainInfo{*result.Blocks, *result.Headers, *result.VerificationProgress, *result.InitialBlockDownload, time.Unix(*result.Time, 0).UTC()}, "", true
+	}
+	if result.BestBlockHash == nil || *result.BestBlockHash == "" {
 		return ChainInfo{}, domain.InvalidResponse, true
 	}
 	var header struct {

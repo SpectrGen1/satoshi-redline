@@ -120,7 +120,7 @@ func TestCollectionFailureMatrix(t *testing.T) {
 	}
 }
 
-func TestBitcoinKnotsChainResponseUsesBestBlockHeaderTime(t *testing.T) {
+func TestChainResponseFallsBackToBestBlockHeaderTime(t *testing.T) {
 	const tipTime = int64(1750000000)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeChainRPC(w, r, tipTime)
@@ -136,6 +136,27 @@ func TestBitcoinKnotsChainResponseUsesBestBlockHeaderTime(t *testing.T) {
 	}
 	if info.TipTime.Unix() != tipTime {
 		t.Fatalf("got tip time %d", info.TipTime.Unix())
+	}
+}
+
+func TestBitcoinKnotsChainResponseUsesReturnedTipTime(t *testing.T) {
+	const tipTime = int64(1750000000)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = fmt.Fprintf(w, `{"result":{"blocks":1,"headers":1,"verificationprogress":1,"initialblockdownload":false,"bestblockhash":"00000001","time":%d,"mediantime":1749999000},"error":null,"id":1}`, tipTime)
+	}))
+	defer server.Close()
+	client, reason := New(server.URL, cookie(t), "", time.Second)
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	info, reason, reached := client.Chain(context.Background())
+	if reason != "" || !reached {
+		t.Fatalf("collection failed: %q/%v", reason, reached)
+	}
+	if info.TipTime.Unix() != tipTime || calls != 1 {
+		t.Fatalf("got tip time %d after %d calls", info.TipTime.Unix(), calls)
 	}
 }
 
