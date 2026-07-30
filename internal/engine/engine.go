@@ -13,6 +13,7 @@ import (
 	"github.com/satoshi-redline/redline/internal/capabilities/bitcoinrpc"
 	"github.com/satoshi-redline/redline/internal/capabilities/electrum"
 	"github.com/satoshi-redline/redline/internal/capabilities/filesystem"
+	"github.com/satoshi-redline/redline/internal/correlation"
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/evaluation"
 	"github.com/satoshi-redline/redline/internal/probes"
@@ -25,9 +26,9 @@ type Runner struct {
 	catalog *probes.Catalog
 }
 type Event struct {
-	ID, Type, ScanID              string
-	OccurredAt                    time.Time
-	ProbeID, FindingCode, Outcome string
+	ID, Type, ScanID                             string
+	OccurredAt                                   time.Time
+	ProbeID, FindingCode, DiagnosisCode, Outcome string
 }
 type EventSink interface{ Emit(Event) }
 
@@ -202,6 +203,12 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 	}
 	for _, f := range scan.Findings {
 		r.emit(Event{ID: f.ID + "-created", Type: "scan.finding.created", ScanID: id, OccurredAt: f.EvaluatedAt, FindingCode: f.Code, Outcome: string(f.Status)})
+	}
+	if r.Config.Electrum.Enabled {
+		scan.Diagnoses = correlation.Electrum(id, scan.Components, scan.DependencyEdges, scan.Findings, now)
+		for _, diagnosis := range scan.Diagnoses {
+			r.emit(Event{ID: diagnosis.ID + "-created", Type: "scan.diagnosis.created", ScanID: id, OccurredAt: diagnosis.DiagnosedAt, DiagnosisCode: diagnosis.Code, Outcome: string(diagnosis.Classification)})
+		}
 	}
 	scan.Summary = evaluation.Summary(scan.Findings)
 	scan.FinishedAt = r.now()

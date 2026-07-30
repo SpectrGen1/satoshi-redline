@@ -192,7 +192,17 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	reason.CapabilityID = "bitcoin.rpc.read/v1"
 	reason.ProviderID = "test"
 	f := domain.Finding{ID: "f", ScanID: "s", Code: "bitcoin.chain.synchronized", ComponentID: "bitcoin.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: n, Role: domain.Required, Reasons: []domain.UnknownReason{reason}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: "bitcoin.chain.state", Problem: domain.EvidenceMissing, ReasonCode: domain.AuthenticationRejected}}, Thresholds: domain.Thresholds{MaxTipAgeSeconds: 60}}
-	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Components: domain.BaseComponents(true), Executions: []domain.ProbeExecution{ex}, Observations: obs, Findings: []domain.Finding{f}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.NoConclusion, Coverage: domain.CoverageSummary{State: domain.Unavailable, ApplicableRequired: 1, UnknownRequired: 1}}}
+	diagnosis := domain.Diagnosis{
+		ID: "diagnosis", ScanID: "s", Code: "wallet-backend.electrum-diagnosis-inconclusive",
+		Classification: domain.DiagnosisInconclusive, Confidence: domain.ConfidenceLow,
+		SummaryKey:   "diagnosis.wallet-backend.electrum-diagnosis-inconclusive",
+		ComponentIDs: []string{"bitcoin.primary", "electrum.primary"}, FindingIDs: []string{"f"},
+		Evidence:                  []domain.EvidenceRef{{ObservationID: "rpc", ObservationKind: "bitcoin.rpc.transport", Role: domain.EvidenceContextualizes}},
+		BlockingUnknownFindingIDs: []string{"f"},
+		PlausibleAlternativeCodes: []string{"wallet-backend.electrum-protocol-breakpoint"},
+		CorrelationRuleID:         "correlation.test", CorrelationRuleVersion: "1.0.0", DiagnosedAt: n,
+	}
+	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Components: domain.BaseComponents(true), Executions: []domain.ProbeExecution{ex}, Observations: obs, Findings: []domain.Finding{f}, Diagnoses: []domain.Diagnosis{diagnosis}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.NoConclusion, Coverage: domain.CoverageSummary{State: domain.Unavailable, ApplicableRequired: 1, UnknownRequired: 1}}}
 	if e = s.Save(context.Background(), x); e != nil {
 		t.Fatal(e)
 	}
@@ -200,13 +210,15 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(y.Observations) != 8 || len(y.Executions) != 1 || len(y.Findings) != 1 || len(y.Findings[0].Reasons) != 1 || len(y.Findings[0].MissingEvidence) != 1 {
+	if len(y.Observations) != 8 || len(y.Executions) != 1 || len(y.Findings) != 1 || len(y.Findings[0].Reasons) != 1 || len(y.Findings[0].MissingEvidence) != 1 ||
+		len(y.Diagnoses) != 1 || len(y.Diagnoses[0].ComponentIDs) != 2 || len(y.Diagnoses[0].FindingIDs) != 1 ||
+		len(y.Diagnoses[0].Evidence) != 1 || len(y.Diagnoses[0].BlockingUnknownFindingIDs) != 1 || len(y.Diagnoses[0].PlausibleAlternativeCodes) != 1 {
 		t.Fatalf("incomplete round trip: %+v", y)
 	}
 	if _, e = s.db.Exec(`DELETE FROM scans WHERE id='s'`); e != nil {
 		t.Fatal(e)
 	}
-	for _, table := range []string{"probe_executions", "observations", "findings", "finding_unknown_reasons"} {
+	for _, table := range []string{"probe_executions", "observations", "findings", "finding_unknown_reasons", "diagnoses", "diagnosis_components", "diagnosis_findings", "diagnosis_evidence", "diagnosis_blocking_unknowns", "diagnosis_alternatives"} {
 		var count int
 		if e = s.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); e != nil || count != 0 {
 			t.Fatalf("orphan in %s: %d %v", table, count, e)

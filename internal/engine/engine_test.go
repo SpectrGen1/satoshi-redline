@@ -251,6 +251,42 @@ func TestConfirmedRPCFailureSurvivesUnknownFilesystem(t *testing.T) {
 	}
 }
 
+func TestElectrumDiagnosisIsCreatedFromActualScanLifecycle(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "tcp://" + listener.Addr().String()
+	_ = listener.Close()
+	config := app.DefaultConfig()
+	config.Electrum.Enabled = true
+	config.Electrum.Endpoint = endpoint
+	config.Electrum.BitcoinComponentID = "bitcoin.primary"
+	sink := &eventRecorder{}
+	scan, err := (Runner{Config: config, Events: sink}).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = scan.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.Diagnoses) != 1 || scan.Diagnoses[0].Classification != domain.DiagnosisInconclusive {
+		t.Fatalf("unexpected diagnoses: %+v", scan.Diagnoses)
+	}
+	diagnosisEvents := 0
+	for _, event := range sink.events {
+		if event.Type == "scan.diagnosis.created" {
+			diagnosisEvents++
+			if event.DiagnosisCode != scan.Diagnoses[0].Code {
+				t.Fatalf("wrong diagnosis event: %+v", event)
+			}
+		}
+	}
+	if diagnosisEvents != 1 {
+		t.Fatalf("got %d diagnosis events", diagnosisEvents)
+	}
+}
+
 type invalidInternalProbe struct{}
 
 func (invalidInternalProbe) Descriptor() probes.Descriptor {

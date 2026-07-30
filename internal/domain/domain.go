@@ -650,6 +650,56 @@ type ComponentSummary struct {
 	Health      Health
 	Coverage    CoverageSummary
 }
+
+type DiagnosisClassification string
+
+const (
+	DiagnosisRootCause          DiagnosisClassification = "root_cause"
+	DiagnosisBreakPoint         DiagnosisClassification = "break_point"
+	DiagnosisContributingFactor DiagnosisClassification = "contributing_factor"
+	DiagnosisSymptomCluster     DiagnosisClassification = "symptom_cluster"
+	DiagnosisInconclusive       DiagnosisClassification = "inconclusive"
+)
+
+type Diagnosis struct {
+	ID                        string
+	ScanID                    string
+	Code                      string
+	Classification            DiagnosisClassification
+	Confidence                Confidence
+	SummaryKey                string
+	ComponentIDs              []string
+	FindingIDs                []string
+	Evidence                  []EvidenceRef
+	BlockingUnknownFindingIDs []string
+	PlausibleAlternativeCodes []string
+	CorrelationRuleID         string
+	CorrelationRuleVersion    string
+	DiagnosedAt               time.Time
+}
+
+func (d Diagnosis) Validate() error {
+	if d.ID == "" || d.ScanID == "" || d.Code == "" || d.Classification == "" || d.Confidence == "" ||
+		d.SummaryKey == "" || len(d.ComponentIDs) == 0 || len(d.FindingIDs) == 0 ||
+		d.CorrelationRuleID == "" || d.CorrelationRuleVersion == "" || d.DiagnosedAt.IsZero() {
+		return fmt.Errorf("invalid diagnosis")
+	}
+	switch d.Classification {
+	case DiagnosisRootCause, DiagnosisBreakPoint, DiagnosisContributingFactor, DiagnosisSymptomCluster, DiagnosisInconclusive:
+	default:
+		return fmt.Errorf("invalid diagnosis classification")
+	}
+	switch d.Confidence {
+	case ConfidenceLow, ConfidenceMedium, ConfidenceHigh:
+	default:
+		return fmt.Errorf("invalid diagnosis confidence")
+	}
+	if d.Classification == DiagnosisInconclusive && len(d.BlockingUnknownFindingIDs) == 0 {
+		return fmt.Errorf("inconclusive diagnosis lacks blocking unknown")
+	}
+	return nil
+}
+
 type Scan struct {
 	ID                    string
 	StartedAt, FinishedAt time.Time
@@ -659,6 +709,7 @@ type Scan struct {
 	Executions            []ProbeExecution
 	Observations          []Observation
 	Findings              []Finding
+	Diagnoses             []Diagnosis
 	Summary               ComponentSummary
 }
 
@@ -729,6 +780,7 @@ func (s Scan) Validate() error {
 		obs[o.ID] = o.Kind
 	}
 	findings := map[string]bool{}
+	findingStatuses := map[string]Status{}
 	var applicable, assessed, unknown int
 	for _, f := range s.Findings {
 		if e := f.Validate(); e != nil {
@@ -741,6 +793,7 @@ func (s Scan) Validate() error {
 			return fmt.Errorf("finding component missing")
 		}
 		findings[f.ID] = true
+		findingStatuses[f.ID] = f.Status
 		if f.Role == Required && f.Applicability == Applicable {
 			applicable++
 			if f.Status == Unknown {
@@ -756,6 +809,40 @@ func (s Scan) Validate() error {
 			}
 			if kind != r.ObservationKind {
 				return fmt.Errorf("finding evidence kind mismatch")
+			}
+		}
+	}
+	diagnoses := map[string]bool{}
+	for _, diagnosis := range s.Diagnoses {
+		if e := diagnosis.Validate(); e != nil {
+			return e
+		}
+		if diagnosis.ScanID != s.ID || diagnoses[diagnosis.ID] {
+			return fmt.Errorf("invalid diagnosis reference")
+		}
+		diagnoses[diagnosis.ID] = true
+		for _, componentID := range diagnosis.ComponentIDs {
+			if _, exists := components[componentID]; !exists {
+				return fmt.Errorf("diagnosis component missing")
+			}
+		}
+		for _, findingID := range diagnosis.FindingIDs {
+			if !findings[findingID] {
+				return fmt.Errorf("diagnosis finding missing")
+			}
+		}
+		for _, findingID := range diagnosis.BlockingUnknownFindingIDs {
+			if findingStatuses[findingID] != Unknown {
+				return fmt.Errorf("diagnosis blocking unknown missing")
+			}
+		}
+		for _, reference := range diagnosis.Evidence {
+			kind, exists := obs[reference.ObservationID]
+			if !exists {
+				return fmt.Errorf("diagnosis evidence missing")
+			}
+			if kind != reference.ObservationKind {
+				return fmt.Errorf("diagnosis evidence kind mismatch")
 			}
 		}
 	}

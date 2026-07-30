@@ -135,3 +135,48 @@ func TestFindingRejectsIncompleteUnknownAndAssessedUnknownData(t *testing.T) {
 		t.Fatal("assessed finding with unknown data accepted")
 	}
 }
+
+func TestDiagnosisGraphInvariants(t *testing.T) {
+	scan := validScan()
+	scan.Diagnoses = []Diagnosis{{
+		ID: "diagnosis", ScanID: scan.ID, Code: "wallet-backend.electrum-protocol-breakpoint",
+		Classification: DiagnosisBreakPoint, Confidence: ConfidenceHigh,
+		SummaryKey:   "diagnosis.wallet-backend.electrum-protocol-breakpoint",
+		ComponentIDs: []string{"bitcoin.primary"}, FindingIDs: []string{"finding"},
+		Evidence:          []EvidenceRef{{ObservationID: "observation", ObservationKind: "bitcoin.rpc.transport", Role: EvidenceSupports}},
+		CorrelationRuleID: "rule", CorrelationRuleVersion: "1.0.0", DiagnosedAt: scan.FinishedAt,
+	}}
+	if err := scan.Validate(); err != nil {
+		t.Fatalf("valid diagnosis rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Diagnosis)
+	}{
+		{"missing component", func(d *Diagnosis) { d.ComponentIDs[0] = "missing" }},
+		{"missing finding", func(d *Diagnosis) { d.FindingIDs[0] = "missing" }},
+		{"missing observation", func(d *Diagnosis) { d.Evidence[0].ObservationID = "missing" }},
+		{"evidence kind mismatch", func(d *Diagnosis) { d.Evidence[0].ObservationKind = "bitcoin.chain.state" }},
+		{"wrong scan", func(d *Diagnosis) { d.ScanID = "other" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := scan
+			candidate.Diagnoses = append([]Diagnosis(nil), scan.Diagnoses...)
+			diagnosis := candidate.Diagnoses[0]
+			diagnosis.ComponentIDs = append([]string(nil), diagnosis.ComponentIDs...)
+			diagnosis.FindingIDs = append([]string(nil), diagnosis.FindingIDs...)
+			diagnosis.Evidence = append([]EvidenceRef(nil), diagnosis.Evidence...)
+			test.mutate(&diagnosis)
+			candidate.Diagnoses[0] = diagnosis
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("invalid diagnosis graph accepted")
+			}
+		})
+	}
+	inconclusive := scan.Diagnoses[0]
+	inconclusive.Classification = DiagnosisInconclusive
+	if err := inconclusive.Validate(); err == nil {
+		t.Fatal("inconclusive diagnosis without blocking unknown accepted")
+	}
+}

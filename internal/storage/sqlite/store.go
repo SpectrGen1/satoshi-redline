@@ -204,6 +204,36 @@ func (s *Store) Save(ctx context.Context, x domain.Scan) error {
 			return e
 		}
 	}
+	for _, diagnosis := range x.Diagnoses {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO diagnoses(id,scan_id,code,classification,confidence,summary_key,correlation_rule_id,correlation_rule_version,diagnosed_at) VALUES(?,?,?,?,?,?,?,?,?)`, diagnosis.ID, diagnosis.ScanID, diagnosis.Code, diagnosis.Classification, diagnosis.Confidence, diagnosis.SummaryKey, diagnosis.CorrelationRuleID, diagnosis.CorrelationRuleVersion, ts(diagnosis.DiagnosedAt)); e != nil {
+			return e
+		}
+		for ordinal, componentID := range diagnosis.ComponentIDs {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO diagnosis_components(diagnosis_id,scan_id,ordinal,component_id) VALUES(?,?,?,?)`, diagnosis.ID, diagnosis.ScanID, ordinal, componentID); e != nil {
+				return e
+			}
+		}
+		for ordinal, findingID := range diagnosis.FindingIDs {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO diagnosis_findings(diagnosis_id,scan_id,ordinal,finding_id) VALUES(?,?,?,?)`, diagnosis.ID, diagnosis.ScanID, ordinal, findingID); e != nil {
+				return e
+			}
+		}
+		for ordinal, evidence := range diagnosis.Evidence {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO diagnosis_evidence(diagnosis_id,scan_id,ordinal,observation_id,observation_kind,evidence_role) VALUES(?,?,?,?,?,?)`, diagnosis.ID, diagnosis.ScanID, ordinal, evidence.ObservationID, evidence.ObservationKind, evidence.Role); e != nil {
+				return e
+			}
+		}
+		for ordinal, findingID := range diagnosis.BlockingUnknownFindingIDs {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO diagnosis_blocking_unknowns(diagnosis_id,scan_id,ordinal,finding_id) VALUES(?,?,?,?)`, diagnosis.ID, diagnosis.ScanID, ordinal, findingID); e != nil {
+				return e
+			}
+		}
+		for ordinal, code := range diagnosis.PlausibleAlternativeCodes {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO diagnosis_alternatives(diagnosis_id,ordinal,alternative_code) VALUES(?,?,?)`, diagnosis.ID, ordinal, code); e != nil {
+				return e
+			}
+		}
+	}
 	return tx.Commit()
 }
 func parse(v string) (time.Time, error) { return time.Parse(time.RFC3339Nano, v) }
@@ -292,10 +322,86 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Scan, error) {
 	if x.Findings, e = s.loadFindings(ctx, id); e != nil {
 		return x, e
 	}
+	if x.Diagnoses, e = s.loadDiagnoses(ctx, id); e != nil {
+		return x, e
+	}
 	if e = x.Validate(); e != nil {
 		return x, fmt.Errorf("validate loaded scan: %w", e)
 	}
 	return x, nil
+}
+
+func (s *Store) loadDiagnoses(ctx context.Context, scanID string) ([]domain.Diagnosis, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,scan_id,code,classification,confidence,summary_key,correlation_rule_id,correlation_rule_version,diagnosed_at FROM diagnoses WHERE scan_id=? ORDER BY id`, scanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var diagnoses []domain.Diagnosis
+	for rows.Next() {
+		var diagnosis domain.Diagnosis
+		var diagnosedAt string
+		if err = rows.Scan(&diagnosis.ID, &diagnosis.ScanID, &diagnosis.Code, &diagnosis.Classification, &diagnosis.Confidence, &diagnosis.SummaryKey, &diagnosis.CorrelationRuleID, &diagnosis.CorrelationRuleVersion, &diagnosedAt); err != nil {
+			return nil, err
+		}
+		if diagnosis.DiagnosedAt, err = parse(diagnosedAt); err != nil {
+			return nil, err
+		}
+		if diagnosis.ComponentIDs, err = s.loadDiagnosisStrings(ctx, `SELECT component_id FROM diagnosis_components WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
+			return nil, err
+		}
+		if diagnosis.FindingIDs, err = s.loadDiagnosisStrings(ctx, `SELECT finding_id FROM diagnosis_findings WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
+			return nil, err
+		}
+		if diagnosis.BlockingUnknownFindingIDs, err = s.loadDiagnosisStrings(ctx, `SELECT finding_id FROM diagnosis_blocking_unknowns WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
+			return nil, err
+		}
+		if diagnosis.PlausibleAlternativeCodes, err = s.loadDiagnosisStrings(ctx, `SELECT alternative_code FROM diagnosis_alternatives WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID); err != nil {
+			return nil, err
+		}
+		evidenceRows, queryErr := s.db.QueryContext(ctx, `SELECT observation_id,observation_kind,evidence_role FROM diagnosis_evidence WHERE diagnosis_id=? ORDER BY ordinal`, diagnosis.ID)
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		for evidenceRows.Next() {
+			var evidence domain.EvidenceRef
+			if err = evidenceRows.Scan(&evidence.ObservationID, &evidence.ObservationKind, &evidence.Role); err != nil {
+				evidenceRows.Close()
+				return nil, err
+			}
+			diagnosis.Evidence = append(diagnosis.Evidence, evidence)
+		}
+		if err = evidenceRows.Err(); err != nil {
+			evidenceRows.Close()
+			return nil, err
+		}
+		evidenceRows.Close()
+		diagnoses = append(diagnoses, diagnosis)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return diagnoses, nil
+}
+
+func (s *Store) loadDiagnosisStrings(ctx context.Context, query, diagnosisID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, diagnosisID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var values []string
+	for rows.Next() {
+		var value string
+		if err = rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 func (s *Store) loadObservations(ctx context.Context, id string) ([]domain.Observation, error) {
 	rows, e := s.db.QueryContext(ctx, `SELECT id,scan_id,probe_execution_id,component_id,kind,schema_version,observed_at,capability_id,provider_id,sensitivity FROM observations WHERE scan_id=? ORDER BY id`, id)

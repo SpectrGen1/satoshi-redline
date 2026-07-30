@@ -319,9 +319,10 @@ func findingsDTO(a []domain.Finding) []FindingDTO {
 }
 
 type EventPayloadDTO struct {
-	ProbeID     string `json:"probe_id,omitempty"`
-	FindingCode string `json:"finding_code,omitempty"`
-	Outcome     string `json:"outcome,omitempty"`
+	ProbeID       string `json:"probe_id,omitempty"`
+	FindingCode   string `json:"finding_code,omitempty"`
+	DiagnosisCode string `json:"diagnosis_code,omitempty"`
+	Outcome       string `json:"outcome,omitempty"`
 }
 type EventDTO struct {
 	SchemaVersion int             `json:"event_schema_version"`
@@ -363,7 +364,7 @@ func (s *Server) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case e := <-ch:
-			data, err := json.Marshal(EventDTO{1, e.ID, e.Type, e.OccurredAt.UTC().Format(time.RFC3339), e.ScanID, EventPayloadDTO{e.ProbeID, e.FindingCode, e.Outcome}})
+			data, err := json.Marshal(EventDTO{1, e.ID, e.Type, e.OccurredAt.UTC().Format(time.RFC3339), e.ScanID, EventPayloadDTO{e.ProbeID, e.FindingCode, e.DiagnosisCode, e.Outcome}})
 			if err != nil || !setDeadline() {
 				return
 			}

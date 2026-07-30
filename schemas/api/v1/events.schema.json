@@ -25,6 +25,7 @@
         "scan.probe.started",
         "scan.probe.completed",
         "scan.finding.created",
+        "scan.diagnosis.created",
         "scan.completed",
         "scan.failed"
       ]
@@ -46,6 +47,10 @@
           "minLength": 1
         },
         "finding_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "diagnosis_code": {
           "type": "string",
           "minLength": 1
         },
