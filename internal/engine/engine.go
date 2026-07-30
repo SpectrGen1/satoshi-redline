@@ -34,7 +34,10 @@ func (r Runner) ScanAndPersist(ctx context.Context, store ScanStore) (domain.Sca
 
 func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	now := r.now()
-	id := newID()
+	id, err := newID()
+	if err != nil {
+		return domain.Scan{}, err
+	}
 	scan := domain.Scan{ID: id, StartedAt: now, Status: "running"}
 	scan.Observations = append(scan.Observations, domain.Observation{ID: id + "-clock", ScanID: id, Kind: "system.clock.current/v1", ComponentID: "system.local", ObservedAt: now})
 	var rpcObs *domain.Observation
@@ -52,7 +55,8 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 			scan.Observations = append(scan.Observations, *rpcObs)
 		}
 	}
-	scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: id + "-bitcoin-probe", ScanID: id, ProbeID: "bitcoin.chain-state/v1", Outcome: executionOutcome(rpcReason), StartedAt: now, FinishedAt: r.now(), Reason: rpcReason})
+	bitcoinDone := r.now()
+	scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: id + "-bitcoin-probe", ScanID: id, ProbeID: "bitcoin.chain-state/v1", Outcome: executionOutcome(rpcReason), StartedAt: now, FinishedAt: bitcoinDone, DurationMS: bitcoinDone.Sub(now).Milliseconds(), Reason: rpcReason})
 	scan.Findings = append(scan.Findings, evaluation.RPC(id, &rpcReach, rpcReason))
 	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, now)...)
 	cap, fsReason := filesystem.Stat(ctx, r.Config.Bitcoin.DataDirectory)
@@ -61,7 +65,8 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 		fsObs = &domain.Observation{ID: id + "-fs", ScanID: id, Kind: "filesystem.capacity/v1", ComponentID: "bitcoin.primary", ObservedAt: now, TotalBytes: &cap.Total, AvailableBytes: &cap.Available, ReadOnly: &cap.ReadOnly, MountPresent: &cap.MountPresent}
 		scan.Observations = append(scan.Observations, *fsObs)
 	}
-	scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: id + "-filesystem-probe", ScanID: id, ProbeID: "filesystem.capacity/v1", Outcome: executionOutcome(fsReason), StartedAt: now, FinishedAt: r.now(), Reason: fsReason})
+	filesystemDone := r.now()
+	scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: id + "-filesystem-probe", ScanID: id, ProbeID: "filesystem.capacity/v1", Outcome: executionOutcome(fsReason), StartedAt: bitcoinDone, FinishedAt: filesystemDone, DurationMS: filesystemDone.Sub(bitcoinDone).Milliseconds(), Reason: fsReason})
 	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem))
 	scan.Summary = evaluation.Summary(scan.Findings)
 	scan.FinishedAt = r.now()
@@ -74,7 +79,13 @@ func (r Runner) now() time.Time {
 	}
 	return time.Now().UTC()
 }
-func newID() string { b := make([]byte, 12); _, _ = rand.Read(b); return hex.EncodeToString(b) }
+func newID() (string, error) {
+	b := make([]byte, 12)
+	if _, e := rand.Read(b); e != nil {
+		return "", e
+	}
+	return hex.EncodeToString(b), nil
+}
 func executionOutcome(reason domain.UnknownReason) domain.ExecutionOutcome {
 	if reason == "" {
 		return domain.ExecutionCompleted
