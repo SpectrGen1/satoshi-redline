@@ -96,6 +96,35 @@ func (c *Client) Chain(ctx context.Context) (ChainInfo, domain.UnknownReasonCode
 	}
 	return ChainInfo{*result.Blocks, *result.Headers, *result.VerificationProgress, *result.InitialBlockDownload, time.Unix(*header.Time, 0).UTC()}, "", true
 }
+
+func (c *Client) BlockHash(ctx context.Context, height int64) (string, domain.UnknownReasonCode, bool) {
+	if height < 0 {
+		return "", domain.InvalidResponse, false
+	}
+	var hash string
+	_, reason, reached := c.call(ctx, "getblockhash", []any{height}, &hash)
+	if reason != "" {
+		return "", reason, reached
+	}
+	hash = strings.ToLower(hash)
+	if !validHash(hash) {
+		return "", domain.InvalidResponse, true
+	}
+	return hash, "", true
+}
+
+func validHash(hash string) bool {
+	if len(hash) != 64 {
+		return false
+	}
+	for _, c := range hash {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) call(ctx context.Context, method string, params []any, into any) (json.RawMessage, domain.UnknownReasonCode, bool) {
 	if params == nil {
 		params = []any{}
@@ -118,6 +147,9 @@ func (c *Client) call(ctx context.Context, method string, params []any, into any
 	req.Header.Set("Content-Type", "application/json")
 	resp, e := c.http.Do(req)
 	if e != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, domain.Cancelled, false
+		}
 		if errors.Is(e, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, domain.Timeout, false
 		}
@@ -139,12 +171,17 @@ func (c *Client) call(ctx context.Context, method string, params []any, into any
 		return nil, domain.InvalidResponse, true
 	}
 	var envelope struct {
-		Result json.RawMessage `json:"result"`
-		Error  *struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Result  json.RawMessage `json:"result"`
+		Error   *struct {
 			Code int `json:"code"`
 		} `json:"error"`
+		ID *int `json:"id"`
 	}
 	if e = json.Unmarshal(raw, &envelope); e != nil {
+		return nil, domain.InvalidResponse, true
+	}
+	if envelope.ID == nil || *envelope.ID != 1 || (envelope.JSONRPC != "" && envelope.JSONRPC != "1.0" && envelope.JSONRPC != "2.0") {
 		return nil, domain.InvalidResponse, true
 	}
 	if envelope.Error != nil {

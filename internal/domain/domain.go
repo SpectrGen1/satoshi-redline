@@ -373,6 +373,19 @@ type BitcoinChainState struct {
 	TipTime              time.Time
 }
 
+type BitcoinBlockHash struct {
+	Height    int64
+	BlockHash string
+}
+
+func (BitcoinBlockHash) observationValue() {}
+func (v BitcoinBlockHash) Validate() error {
+	if v.Height < 0 || !validHex(v.BlockHash, 64) {
+		return fmt.Errorf("invalid bitcoin block hash")
+	}
+	return nil
+}
+
 func (BitcoinChainState) observationValue() {}
 func (v BitcoinChainState) Validate() error {
 	if v.Blocks < 0 || v.Headers < v.Blocks || v.VerificationProgress < 0 || v.VerificationProgress > 1 || v.TipTime.IsZero() {
@@ -539,6 +552,8 @@ func (o Observation) Validate() error {
 		expected = "bitcoin.rpc.transport"
 	case BitcoinChainState:
 		expected = "bitcoin.chain.state"
+	case BitcoinBlockHash:
+		expected = "bitcoin.chain.block-hash"
 	case FilesystemCapacity:
 		expected = "filesystem.capacity"
 	case ClockState:

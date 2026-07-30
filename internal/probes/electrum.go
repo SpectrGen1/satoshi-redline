@@ -26,10 +26,11 @@ func (p ElectrumProtocolState) Descriptor() Descriptor {
 		ID: "electrum.protocol-state/v1", Version: "1.0.0",
 		ComponentKinds: []string{string(domain.ComponentElectrumBackend)},
 		Required:       []capabilities.ID{capabilities.ElectrumRead},
+		Optional:       []capabilities.ID{capabilities.BitcoinRPCRead},
 		Mode:           Safe, Timeout: timeout, SideEffects: []SideEffect{sideEffect},
 		Sensitivity: "local_sensitive",
 		ObservationKinds: []string{
-			"electrum.protocol.transport", "electrum.server.identity", "electrum.chain.tip",
+			"electrum.protocol.transport", "electrum.server.identity", "electrum.chain.tip", "bitcoin.chain.block-hash",
 		},
 	}
 }
@@ -74,6 +75,20 @@ func (ElectrumProtocolState) Collect(ctx context.Context, capabilitiesSet capabi
 				Height: collected.Tip.Height, BlockHash: collected.Tip.BlockHash, HeaderTime: collected.Tip.HeaderTime,
 			},
 		})
+		if capabilitiesSet.Bitcoin != nil {
+			hash, hashReason, _ := capabilitiesSet.Bitcoin.BlockHash(ctx, collected.Tip.Height)
+			if hashReason != "" {
+				reason = hashReason
+			} else {
+				values = append(values, domain.Observation{
+					ID: executionID + "-bitcoin-hash", ScanID: scanID, ProbeExecutionID: executionID,
+					ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.block-hash", SchemaVersion: "v1",
+					ObservedAt: now, CapabilityID: string(capabilities.BitcoinRPCRead),
+					ProviderID: "configured.bitcoin-rpc", Sensitivity: "none",
+					Value: domain.BitcoinBlockHash{Height: collected.Tip.Height, BlockHash: hash},
+				})
+			}
+		}
 	}
 	for _, observation := range values {
 		if err := observation.Validate(); err != nil {

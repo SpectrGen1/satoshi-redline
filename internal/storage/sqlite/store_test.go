@@ -181,6 +181,7 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	obs := []domain.Observation{
 		{ID: "rpc", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.RPCTransportResult{Reached: true, Authentication: domain.AuthenticationRejectedState, Category: "access.authentication_rejected"}},
 		{ID: "chain", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.BitcoinChainState{Blocks: 10, Headers: 10, VerificationProgress: 1, TipTime: n}},
+		{ID: "block-hash", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.block-hash", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.BitcoinBlockHash{Height: 10, BlockHash: "0011111111111111111111111111111111111111111111111111111111111111"}},
 		{ID: "fs", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "filesystem.capacity", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "filesystem.stat/v1", ProviderID: "test", Sensitivity: "none", Value: domain.FilesystemCapacity{TotalBytes: 100, AvailableBytes: 50, MountPresent: true}},
 		{ID: "clock", ScanID: "s", ProbeExecutionID: "p", ComponentID: "system.local", Kind: "system.clock.current", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "clock.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.ClockState{Current: n}},
 		{ID: "electrum-transport", ScanID: "s", ProbeExecutionID: "p", ComponentID: "electrum.primary", Kind: "electrum.protocol.transport", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "electrum.protocol.read/v1", ProviderID: "test", Sensitivity: "local_sensitive", Value: domain.ElectrumProtocolTransport{Reached: true, Transport: domain.ElectrumTransportTCP, TLSVerification: domain.TLSNotApplicable, ProtocolNegotiation: domain.ProtocolAccepted, Category: "valid_protocol_response"}},
@@ -199,7 +200,7 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(y.Observations) != 7 || len(y.Executions) != 1 || len(y.Findings) != 1 || len(y.Findings[0].Reasons) != 1 || len(y.Findings[0].MissingEvidence) != 1 {
+	if len(y.Observations) != 8 || len(y.Executions) != 1 || len(y.Findings) != 1 || len(y.Findings[0].Reasons) != 1 || len(y.Findings[0].MissingEvidence) != 1 {
 		t.Fatalf("incomplete round trip: %+v", y)
 	}
 	if _, e = s.db.Exec(`DELETE FROM scans WHERE id='s'`); e != nil {

@@ -20,6 +20,7 @@ const (
 
 type BitcoinRPCReadAccess interface {
 	Chain(context.Context) (bitcoinrpc.ChainInfo, domain.UnknownReasonCode, bool)
+	BlockHash(context.Context, int64) (string, domain.UnknownReasonCode, bool)
 }
 type FilesystemStatAccess interface {
 	Stat(context.Context) (FilesystemCapacity, domain.UnknownReasonCode)

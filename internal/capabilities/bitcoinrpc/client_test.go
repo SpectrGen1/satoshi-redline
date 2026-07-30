@@ -190,3 +190,85 @@ func TestConnectionRefusal(t *testing.T) {
 		t.Fatalf("got %q/%v", reason, reached)
 	}
 }
+
+func TestBlockHashUsesFixedMethodAndValidatesResponse(t *testing.T) {
+	const hash = "0011111111111111111111111111111111111111111111111111111111111111"
+	for name, response := range map[string]string{
+		"core":  `{"result":"` + hash + `","error":null,"id":1}`,
+		"knots": `{"jsonrpc":"2.0","result":"` + hash + `","error":null,"id":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Method string  `json:"method"`
+					Params []int64 `json:"params"`
+					ID     int     `json:"id"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				if request.Method != "getblockhash" || len(request.Params) != 1 || request.Params[0] != 42 || request.ID != 1 {
+					t.Errorf("unexpected request: %+v", request)
+				}
+				_, _ = w.Write([]byte(response))
+			}))
+			defer server.Close()
+			client, reason := New(server.URL, cookie(t), "", time.Second)
+			if reason != "" {
+				t.Fatal(reason)
+			}
+			got, reason, reached := client.BlockHash(context.Background(), 42)
+			if reason != "" || !reached || got != hash {
+				t.Fatalf("got %q %s %v", got, reason, reached)
+			}
+		})
+	}
+}
+
+func TestBlockHashRejectsInvalidEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		height   int64
+		response string
+		reason   domain.UnknownReasonCode
+	}{
+		{"negative height", -1, "", domain.InvalidResponse},
+		{"rpc error", 1, `{"result":null,"error":{"code":-8,"message":"CANARY_HASH_ERROR"},"id":1}`, domain.RPCError},
+		{"invalid hash", 1, `{"result":"not-a-hash","error":null,"id":1}`, domain.InvalidResponse},
+		{"wrong id", 1, `{"result":"0011111111111111111111111111111111111111111111111111111111111111","error":null,"id":2}`, domain.InvalidResponse},
+		{"missing id", 1, `{"result":"0011111111111111111111111111111111111111111111111111111111111111","error":null}`, domain.InvalidResponse},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer server.Close()
+			client, reason := New(server.URL, cookie(t), "", time.Second)
+			if reason != "" {
+				t.Fatal(reason)
+			}
+			_, got, _ := client.BlockHash(context.Background(), test.height)
+			if got != test.reason {
+				t.Fatalf("got %s want %s", got, test.reason)
+			}
+		})
+	}
+}
+
+func TestBlockHashCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	client, reason := New(server.URL, cookie(t), "", time.Second)
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, got, _ := client.BlockHash(ctx, 1); got != domain.Cancelled {
+		t.Fatalf("unexpected cancellation category: %s", got)
+	}
+}
