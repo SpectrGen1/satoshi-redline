@@ -21,3 +21,5 @@ go run ./cmd/redline --config redline.json report SCAN_ID
 ```
 
 The RPC cookie is consumed only by the destination-bound provider. Credentials, headers, raw requests, raw responses, peer/local/proxy addresses, and directory contents are neither logged nor persisted/exported. This MVP has no UI, privileged helper, discovery, packaging, monitoring, incidents, wallet RPC, external services, telemetry, updates, or remediation. SQLite stores only approved normalized fields.
+
+Contract tests execute the report JSON Schema, validate live handler responses against OpenAPI, and inject privacy canaries across RPC, SQLite, API, and report boundaries.
