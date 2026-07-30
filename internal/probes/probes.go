@@ -41,8 +41,8 @@ func (d Descriptor) Validate() error {
 }
 
 type Result struct {
-	Values []domain.TypedObservation
-	Reason domain.UnknownReason
+	Values []domain.Observation
+	Reason domain.UnknownReasonCode
 }
 type Probe interface {
 	Descriptor() Descriptor

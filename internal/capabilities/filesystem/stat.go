@@ -14,7 +14,7 @@ type Capacity struct {
 }
 
 // Stat is scoped to the configured path and never lists directory contents.
-func Stat(ctx context.Context, path string) (Capacity, domain.UnknownReason) {
+func Stat(ctx context.Context, path string) (Capacity, domain.UnknownReasonCode) {
 	if path == "" {
 		return Capacity{}, domain.NotConfigured
 	}

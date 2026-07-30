@@ -28,7 +28,7 @@ type Client struct {
 	http             *http.Client
 }
 
-func New(endpoint, cookieFile, cookieEnv string, timeout time.Duration) (*Client, domain.UnknownReason) {
+func New(endpoint, cookieFile, cookieEnv string, timeout time.Duration) (*Client, domain.UnknownReasonCode) {
 	if endpoint == "" {
 		return nil, domain.NotConfigured
 	}
@@ -56,7 +56,7 @@ func New(endpoint, cookieFile, cookieEnv string, timeout time.Duration) (*Client
 	transport := &http.Transport{Proxy: nil, DisableCompression: true}
 	return &Client{endpoint, cookie, &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, ""
 }
-func (c *Client) Chain(ctx context.Context) (ChainInfo, domain.UnknownReason, bool) {
+func (c *Client) Chain(ctx context.Context) (ChainInfo, domain.UnknownReasonCode, bool) {
 	var result struct {
 		Blocks               int64   `json:"blocks"`
 		Headers              int64   `json:"headers"`
@@ -73,7 +73,7 @@ func (c *Client) Chain(ctx context.Context) (ChainInfo, domain.UnknownReason, bo
 	}
 	return ChainInfo{result.Blocks, result.Headers, result.VerificationProgress, result.InitialBlockDownload, time.Unix(result.Time, 0).UTC()}, "", true
 }
-func (c *Client) call(ctx context.Context, method string, into any) (json.RawMessage, domain.UnknownReason, bool) {
+func (c *Client) call(ctx context.Context, method string, into any) (json.RawMessage, domain.UnknownReasonCode, bool) {
 	b, _ := json.Marshal(struct {
 		JSONRPC, Method string
 		Params          []any

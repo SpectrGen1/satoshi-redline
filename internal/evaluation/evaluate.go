@@ -1,84 +1,100 @@
 package evaluation
 
 import (
-	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/domain"
 	"time"
 )
 
-func finding(scan, code string, status domain.Status, reason domain.UnknownReason, provenance string, required bool) domain.Finding {
-	f := domain.Finding{ID: scan + "-" + code, ScanID: scan, Code: code, ComponentID: "bitcoin.primary", Status: status, Applicability: domain.Applicable, Evaluator: "redline.mvp/v1", EvaluatorVersion: "v1", Provenance: provenance, EvaluatedAt: time.Now().UTC(), Required: required, Role: domain.Required}
-	if reason != "" {
-		f.Reasons = []domain.UnknownReason{reason}
-		f.MissingEvidence = []domain.MissingEvidence{{Kind: "required", Reason: reason}}
-	}
-	return f
+func assessed(scan, code string, status domain.Status, severity domain.Severity, now time.Time, obs domain.Observation, thresholds domain.Thresholds) domain.Finding {
+	return domain.Finding{ID: scan + "-" + code, ScanID: scan, Code: code, ComponentID: "bitcoin.primary", Status: status, Applicability: domain.Applicable, Severity: severity, Confidence: domain.ConfidenceHigh, EvaluatorID: "redline." + code, EvaluatorVersion: "1.0.0", EvaluatedAt: now, Role: domain.Required, Evidence: []domain.EvidenceRef{{ObservationID: obs.ID, ObservationKind: obs.Kind, Role: domain.EvidenceSupports}}, Thresholds: thresholds}
 }
-func RPC(scan string, reachable *bool, reason domain.UnknownReason) domain.Finding {
-	if reason == domain.AuthenticationRejected || reason == domain.InvalidResponse || reason == domain.RPCError {
-		return finding(scan, "bitcoin.rpc.reachable", domain.Pass, "", "http endpoint reached", true)
-	}
-	if reason != "" {
-		return finding(scan, "bitcoin.rpc.reachable", domain.Unknown, reason, "", true)
-	}
-	if reachable == nil {
-		return finding(scan, "bitcoin.rpc.reachable", domain.Unknown, domain.RequiredObservationMissing, "", true)
-	}
-	if !*reachable {
-		return finding(scan, "bitcoin.rpc.reachable", domain.Failure, "", "rpc endpoint returned no usable response", true)
-	}
-	return finding(scan, "bitcoin.rpc.reachable", domain.Pass, "", "approved getblockchaininfo response", true)
+func unknown(scan, code, kind string, reason domain.UnknownReasonCode, now time.Time, thresholds domain.Thresholds) domain.Finding {
+	return domain.Finding{ID: scan + "-" + code, ScanID: scan, Code: code, ComponentID: "bitcoin.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "redline." + code, EvaluatorVersion: "1.0.0", EvaluatedAt: now, Role: domain.Required, Reasons: []domain.UnknownReason{domain.Reason(reason)}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: kind, Problem: problem(reason), ReasonCode: reason}}, Thresholds: thresholds}
 }
-func Chain(scan string, obs *domain.Observation, reason domain.UnknownReason, c app.SyncThresholds, now time.Time) []domain.Finding {
-	p := fmt.Sprintf("max_tip_age_seconds=%d,min_verification_progress=%.6f,max_header_lag=%d", c.MaxTipAgeSeconds, c.MinVerificationProgress, c.MaxHeaderLag)
-	unknown := func(r domain.UnknownReason) []domain.Finding {
-		return []domain.Finding{finding(scan, "bitcoin.chain.synchronized", domain.Unknown, r, p, true), finding(scan, "bitcoin.chain.tip-freshness", domain.Unknown, r, p, true)}
+func problem(r domain.UnknownReasonCode) domain.EvidenceProblem {
+	if r == domain.StaleEvidence {
+		return domain.EvidenceStale
 	}
-	if reason != "" || obs == nil || obs.Blocks == nil || obs.Headers == nil || obs.VerificationProgress == nil || obs.InitialBlockDownload == nil || obs.TipTime == nil {
-		return unknown(first(reason, domain.RequiredObservationMissing))
+	if r == domain.TemporallyInconsistent || r == domain.InvalidResponse {
+		return domain.EvidenceUnusable
 	}
-	if *obs.Blocks < 0 || *obs.Headers < *obs.Blocks || *obs.VerificationProgress < 0 || *obs.VerificationProgress > 1 {
-		return unknown(domain.InvalidResponse)
-	}
-	if obs.TipTime.After(now.Add(time.Minute)) {
-		return unknown(domain.TemporallyInconsistent)
-	}
-	if now.Sub(*obs.TipTime) > time.Duration(c.MaxTipAgeSeconds)*time.Second {
-		return []domain.Finding{finding(scan, "bitcoin.chain.synchronized", domain.Unknown, domain.StaleEvidence, p, true), finding(scan, "bitcoin.chain.tip-freshness", domain.Warning, "", p, true)}
-	}
-	if *obs.InitialBlockDownload || *obs.Headers-*obs.Blocks > c.MaxHeaderLag || *obs.VerificationProgress < c.MinVerificationProgress {
-		return []domain.Finding{finding(scan, "bitcoin.chain.synchronized", domain.Failure, "", p, true), finding(scan, "bitcoin.chain.tip-freshness", domain.Pass, "", p, true)}
-	}
-	return []domain.Finding{finding(scan, "bitcoin.chain.synchronized", domain.Pass, "", p, true), finding(scan, "bitcoin.chain.tip-freshness", domain.Pass, "", p, true)}
+	return domain.EvidenceMissing
 }
-func Filesystem(scan string, obs *domain.Observation, reason domain.UnknownReason, c app.FilesystemThresholds) domain.Finding {
-	p := fmt.Sprintf("warning_available_percent=%.2f,failure_available_percent=%.2f", c.WarningAvailablePercent, c.FailureAvailablePercent)
-	if reason != "" || obs == nil || obs.TotalBytes == nil || obs.AvailableBytes == nil || obs.ReadOnly == nil || obs.MountPresent == nil {
-		return finding(scan, "filesystem.capacity-pressure", domain.Unknown, first(reason, domain.RequiredObservationMissing), p, true)
+func RPC(scan string, obs *domain.Observation, reason domain.UnknownReasonCode, now time.Time) domain.Finding {
+	if obs == nil {
+		return unknown(scan, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", first(reason, domain.RequiredObservationMissing), now, domain.Thresholds{})
 	}
-	if *obs.ReadOnly {
-		return finding(scan, "filesystem.capacity-pressure", domain.Failure, "", p, true)
+	v, ok := obs.Value.(domain.RPCTransportResult)
+	if !ok {
+		return unknown(scan, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", domain.InvalidResponse, now, domain.Thresholds{})
 	}
-	percent := float64(*obs.AvailableBytes) * 100 / float64(*obs.TotalBytes)
-	if percent <= c.FailureAvailablePercent {
-		return finding(scan, "filesystem.capacity-pressure", domain.Failure, "", p, true)
+	if v.Reached {
+		return assessed(scan, "bitcoin.rpc.reachable", domain.Pass, domain.SeverityNone, now, *obs, domain.Thresholds{})
 	}
-	if percent <= c.WarningAvailablePercent {
-		return finding(scan, "filesystem.capacity-pressure", domain.Warning, "", p, true)
+	if reason == domain.ConnectionRefused || reason == domain.RouteUnreachable || reason == domain.ProtocolError {
+		return assessed(scan, "bitcoin.rpc.reachable", domain.Failure, domain.SeverityHigh, now, *obs, domain.Thresholds{})
 	}
-	return finding(scan, "filesystem.capacity-pressure", domain.Pass, "", p, true)
+	return unknown(scan, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", first(reason, domain.RequiredObservationMissing), now, domain.Thresholds{})
 }
-func first(a, b domain.UnknownReason) domain.UnknownReason {
+func Chain(scan string, obs *domain.Observation, reason domain.UnknownReasonCode, c app.SyncThresholds, now time.Time) []domain.Finding {
+	t := domain.Thresholds{MaxTipAgeSeconds: c.MaxTipAgeSeconds, MinVerificationProgress: c.MinVerificationProgress, MaxHeaderLag: c.MaxHeaderLag}
+	u := func(r domain.UnknownReasonCode) []domain.Finding {
+		return []domain.Finding{unknown(scan, "bitcoin.chain.synchronized", "bitcoin.chain.state", r, now, t), unknown(scan, "bitcoin.chain.tip-freshness", "bitcoin.chain.state", r, now, t)}
+	}
+	if obs == nil {
+		return u(first(reason, domain.RequiredObservationMissing))
+	}
+	v, ok := obs.Value.(domain.BitcoinChainState)
+	if !ok || v.Validate() != nil {
+		return u(domain.InvalidResponse)
+	}
+	if v.TipTime.After(now.Add(time.Minute)) {
+		return u(domain.TemporallyInconsistent)
+	}
+	if now.Sub(v.TipTime) > time.Duration(c.MaxTipAgeSeconds)*time.Second {
+		return []domain.Finding{unknown(scan, "bitcoin.chain.synchronized", "bitcoin.chain.state", domain.StaleEvidence, now, t), assessed(scan, "bitcoin.chain.tip-freshness", domain.Warning, domain.SeverityMedium, now, *obs, t)}
+	}
+	syncStatus := domain.Pass
+	sev := domain.SeverityNone
+	if v.InitialBlockDownload || v.Headers-v.Blocks > c.MaxHeaderLag || v.VerificationProgress < c.MinVerificationProgress {
+		syncStatus = domain.Failure
+		sev = domain.SeverityHigh
+	}
+	return []domain.Finding{assessed(scan, "bitcoin.chain.synchronized", syncStatus, sev, now, *obs, t), assessed(scan, "bitcoin.chain.tip-freshness", domain.Pass, domain.SeverityNone, now, *obs, t)}
+}
+func Filesystem(scan string, obs *domain.Observation, reason domain.UnknownReasonCode, c app.FilesystemThresholds, now time.Time) domain.Finding {
+	t := domain.Thresholds{WarningAvailablePercent: c.WarningAvailablePercent, FailureAvailablePercent: c.FailureAvailablePercent}
+	if obs == nil {
+		return unknown(scan, "filesystem.capacity-pressure", "filesystem.capacity", first(reason, domain.RequiredObservationMissing), now, t)
+	}
+	v, ok := obs.Value.(domain.FilesystemCapacity)
+	if !ok || v.Validate() != nil {
+		return unknown(scan, "filesystem.capacity-pressure", "filesystem.capacity", domain.InvalidResponse, now, t)
+	}
+	status, sev := domain.Pass, domain.SeverityNone
+	if !v.MountPresent || v.ReadOnly {
+		status, sev = domain.Failure, domain.SeverityHigh
+	} else {
+		pct := float64(v.AvailableBytes) * 100 / float64(v.TotalBytes)
+		if pct <= c.FailureAvailablePercent {
+			status, sev = domain.Failure, domain.SeverityCritical
+		} else if pct <= c.WarningAvailablePercent {
+			status, sev = domain.Warning, domain.SeverityMedium
+		}
+	}
+	return assessed(scan, "filesystem.capacity-pressure", status, sev, now, *obs, t)
+}
+func first(a, b domain.UnknownReasonCode) domain.UnknownReasonCode {
 	if a != "" {
 		return a
 	}
 	return b
 }
-func Summary(findings []domain.Finding) domain.ComponentSummary {
+func Summary(fs []domain.Finding) domain.ComponentSummary {
 	s := domain.ComponentSummary{ComponentID: "bitcoin.primary"}
-	for _, f := range findings {
-		if !f.Required || f.Applicability != domain.Applicable {
+	for _, f := range fs {
+		if f.Role != domain.Required || f.Applicability != domain.Applicable {
 			continue
 		}
 		s.Coverage.ApplicableRequired++

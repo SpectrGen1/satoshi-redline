@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/capabilities"
 	"github.com/satoshi-redline/redline/internal/capabilities/bitcoinrpc"
@@ -11,6 +12,7 @@ import (
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/evaluation"
 	"github.com/satoshi-redline/redline/internal/probes"
+	"strings"
 	"time"
 )
 
@@ -23,7 +25,7 @@ type ScanStore interface {
 }
 type filesystemProvider struct{ path string }
 
-func (p filesystemProvider) Stat(ctx context.Context) (capabilities.FilesystemCapacity, domain.UnknownReason) {
+func (p filesystemProvider) Stat(ctx context.Context) (capabilities.FilesystemCapacity, domain.UnknownReasonCode) {
 	v, r := filesystem.Stat(ctx, p.path)
 	return capabilities.FilesystemCapacity{Total: v.Total, Available: v.Available, ReadOnly: v.ReadOnly, MountPresent: v.MountPresent}, r
 }
@@ -47,8 +49,7 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 		return domain.Scan{}, err
 	}
 	scan := domain.Scan{ID: id, StartedAt: now, Status: "running"}
-	scan.Observations = append(scan.Observations, domain.Observation{ID: id + "-clock", ScanID: id, Kind: "system.clock.current/v1", ComponentID: "system.local", ObservedAt: now})
-	var rpcObs *domain.Observation
+	var rpcObs, transportObs, fsObs *domain.Observation
 	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())
 	caps := capabilities.Set{Filesystem: filesystemProvider{r.Config.Bitcoin.DataDirectory}, Clock: capabilities.SystemClock{}}
 	if client != nil {
@@ -58,30 +59,52 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	if catalogErr != nil {
 		return domain.Scan{}, catalogErr
 	}
-	rpcReach := false
 	rpcReason := createReason
-	var fsReason domain.UnknownReason
-	var fsObs *domain.Observation
+	var fsReason domain.UnknownReasonCode
 	for _, p := range catalog.Probes() {
-		executionID := id + "-" + p.Descriptor().ID
+		d := p.Descriptor()
+		executionID := id + "-" + strings.ReplaceAll(d.ID, "/", "-")
 		started := r.now()
-		result := p.Collect(ctx, caps, id, executionID, started)
+		probeCtx, cancel := context.WithTimeout(ctx, d.Timeout)
+		result := p.Collect(probeCtx, caps.Scope(d.Required, d.Optional), id, executionID, started)
+		ctxErr := probeCtx.Err()
+		cancel()
 		done := r.now()
-		scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: executionID, ScanID: id, ProbeID: p.Descriptor().ID, Outcome: executionOutcome(result.Reason), StartedAt: started, FinishedAt: done, DurationMS: done.Sub(started).Milliseconds(), Reason: result.Reason})
+		if ctxErr == context.DeadlineExceeded {
+			result.Reason = domain.Timeout
+		} else if ctxErr == context.Canceled {
+			result.Reason = domain.Cancelled
+		}
+		outcome := executionOutcome(result.Reason)
+		if len(result.Values) > 0 && result.Reason != "" {
+			outcome = domain.ExecutionPartial
+		}
+		scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: executionID, ScanID: id, ProbeID: d.ID, ProbeVersion: d.Version, Outcome: outcome, StartedAt: started, FinishedAt: done, DurationMS: done.Sub(started).Milliseconds(), Limitation: result.Reason})
+		declared := map[string]bool{}
+		for _, k := range d.ObservationKinds {
+			declared[k] = true
+		}
 		for _, typed := range result.Values {
-			switch v := typed.Value.(type) {
+			if !declared[typed.Kind] {
+				return domain.Scan{}, fmt.Errorf("probe %s emitted undeclared observation %s", d.ID, typed.Kind)
+			}
+			if e := typed.Validate(); e != nil {
+				return domain.Scan{}, e
+			}
+			scan.Observations = append(scan.Observations, typed)
+			switch typed.Value.(type) {
 			case domain.RPCTransportResult:
-				rpcReach = v.Reached
+				o := typed
+				transportObs = &o
 				if result.Reason != "" {
 					rpcReason = result.Reason
 				}
-				scan.Observations = append(scan.Observations, domain.Observation{ID: typed.ID, ScanID: id, Kind: "bitcoin.rpc.response/v1", ComponentID: "bitcoin.primary", ObservedAt: typed.ObservedAt, RPCReachable: &v.Reached})
 			case domain.BitcoinChainState:
-				rpcObs = &domain.Observation{ID: typed.ID, ScanID: id, Kind: "bitcoin.chain.state/v1", ComponentID: "bitcoin.primary", ObservedAt: typed.ObservedAt, Blocks: &v.Blocks, Headers: &v.Headers, VerificationProgress: &v.VerificationProgress, InitialBlockDownload: &v.InitialBlockDownload, TipTime: &v.TipTime}
-				scan.Observations = append(scan.Observations, *rpcObs)
+				o := typed
+				rpcObs = &o
 			case domain.FilesystemCapacity:
-				fsObs = &domain.Observation{ID: typed.ID, ScanID: id, Kind: "filesystem.capacity/v1", ComponentID: "bitcoin.primary", ObservedAt: typed.ObservedAt, TotalBytes: &v.TotalBytes, AvailableBytes: &v.AvailableBytes, ReadOnly: &v.ReadOnly, MountPresent: &v.MountPresent}
-				scan.Observations = append(scan.Observations, *fsObs)
+				o := typed
+				fsObs = &o
 			}
 		}
 		if p.Descriptor().ID == "bitcoin.chain-state/v1" && result.Reason != "" {
@@ -91,9 +114,9 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 			fsReason = result.Reason
 		}
 	}
-	scan.Findings = append(scan.Findings, evaluation.RPC(id, &rpcReach, rpcReason))
+	scan.Findings = append(scan.Findings, evaluation.RPC(id, transportObs, rpcReason, now))
 	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, now)...)
-	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem))
+	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem, now))
 	scan.Summary = evaluation.Summary(scan.Findings)
 	scan.FinishedAt = r.now()
 	scan.Status = "completed"
@@ -112,9 +135,15 @@ func newID() (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
-func executionOutcome(reason domain.UnknownReason) domain.ExecutionOutcome {
+func executionOutcome(reason domain.UnknownReasonCode) domain.ExecutionOutcome {
 	if reason == "" {
 		return domain.ExecutionCompleted
 	}
-	return domain.ExecutionUnavailable
+	if reason == domain.Cancelled || reason == domain.Timeout {
+		return domain.ExecutionCancelled
+	}
+	if reason == domain.NotConfigured || reason == domain.SecretReferenceUnavailable || reason == domain.PermissionDenied || reason == domain.RequiredObservationMissing {
+		return domain.ExecutionUnavailable
+	}
+	return domain.ExecutionFailed
 }

@@ -1,7 +1,10 @@
-// Package domain contains the private, normalized diagnostic model.
+// Package domain contains the private normalized diagnostic model.
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Status string
 
@@ -18,6 +21,33 @@ const (
 	Applicable    Applicability = "applicable"
 	NotApplicable Applicability = "not_applicable"
 	Undetermined  Applicability = "undetermined"
+)
+
+type Severity string
+
+const (
+	SeverityNone          Severity = "none"
+	SeverityInformational Severity = "informational"
+	SeverityLow           Severity = "low"
+	SeverityMedium        Severity = "medium"
+	SeverityHigh          Severity = "high"
+	SeverityCritical      Severity = "critical"
+)
+
+type Confidence string
+
+const (
+	ConfidenceLow    Confidence = "low"
+	ConfidenceMedium Confidence = "medium"
+	ConfidenceHigh   Confidence = "high"
+)
+
+type CoverageRole string
+
+const (
+	Required      CoverageRole = "required"
+	Optional      CoverageRole = "optional"
+	Informational CoverageRole = "informational"
 )
 
 type Health string
@@ -42,59 +72,133 @@ type ExecutionOutcome string
 
 const (
 	ExecutionCompleted   ExecutionOutcome = "completed"
+	ExecutionPartial     ExecutionOutcome = "partial"
 	ExecutionUnavailable ExecutionOutcome = "unavailable"
 	ExecutionFailed      ExecutionOutcome = "failed"
 	ExecutionCancelled   ExecutionOutcome = "cancelled"
 )
 
-type UnknownReason string
+type UnknownReasonCode string
 
 const (
-	SecretReferenceUnavailable UnknownReason = "access.secret_reference_unavailable"
-	PermissionDenied           UnknownReason = "access.permission_denied"
-	NotConfigured              UnknownReason = "configuration.not_configured"
-	Timeout                    UnknownReason = "collection.timeout"
-	ProtocolError              UnknownReason = "collection.protocol_error"
-	InvalidResponse            UnknownReason = "collection.invalid_response"
-	UnsupportedSchema          UnknownReason = "compatibility.unsupported_response_schema"
-	StaleEvidence              UnknownReason = "evidence.stale"
-	TemporallyInconsistent     UnknownReason = "evidence.temporally_inconsistent"
-	RequiredObservationMissing UnknownReason = "evidence.required_observation_missing"
-	EvaluationInternalError    UnknownReason = "evaluation.internal_error"
-	AuthenticationRejected     UnknownReason = "access.authentication_rejected"
-	ConnectionRefused          UnknownReason = "collection.connection_refused"
-	RouteUnreachable           UnknownReason = "collection.route_unreachable"
-	RPCError                   UnknownReason = "collection.rpc_error"
+	SecretReferenceUnavailable UnknownReasonCode = "access.secret_reference_unavailable"
+	PermissionDenied           UnknownReasonCode = "access.permission_denied"
+	NotConfigured              UnknownReasonCode = "configuration.not_configured"
+	Timeout                    UnknownReasonCode = "collection.timeout"
+	Cancelled                  UnknownReasonCode = "collection.cancelled"
+	ProtocolError              UnknownReasonCode = "collection.protocol_error"
+	InvalidResponse            UnknownReasonCode = "collection.invalid_response"
+	UnsupportedSchema          UnknownReasonCode = "compatibility.unsupported_response_schema"
+	StaleEvidence              UnknownReasonCode = "evidence.stale"
+	TemporallyInconsistent     UnknownReasonCode = "evidence.temporally_inconsistent"
+	RequiredObservationMissing UnknownReasonCode = "evidence.required_observation_missing"
+	EvaluationInternalError    UnknownReasonCode = "evaluation.internal_error"
+	AuthenticationRejected     UnknownReasonCode = "access.authentication_rejected"
+	ConnectionRefused          UnknownReasonCode = "collection.connection_refused"
+	RouteUnreachable           UnknownReasonCode = "collection.route_unreachable"
+	RPCError                   UnknownReasonCode = "collection.rpc_error"
 )
 
-type Severity string
+type DiagnosticStage string
 
 const (
-	SeverityInfo     Severity = "info"
-	SeverityWarning  Severity = "warning"
-	SeverityCritical Severity = "critical"
+	StageDiscovery            DiagnosticStage = "discovery"
+	StageCapabilityResolution DiagnosticStage = "capability_resolution"
+	StageCollection           DiagnosticStage = "collection"
+	StageNormalization        DiagnosticStage = "normalization"
+	StageEvaluation           DiagnosticStage = "evaluation"
+	StageCorrelation          DiagnosticStage = "correlation"
 )
 
-type CoverageRole string
+type Retryability string
 
 const (
-	Required      CoverageRole = "required"
-	Optional      CoverageRole = "optional"
-	Informational CoverageRole = "informational"
+	Retryable              Retryability = "retryable"
+	NotRetryable           Retryability = "not_retryable"
+	ConditionallyRetryable Retryability = "conditionally_retryable"
+	RetryabilityUnknown    Retryability = "unknown"
 )
 
-type EvidenceRef struct{ ObservationID, Kind string }
+type ResolutionClass string
+
+const (
+	ResolutionRetryScan            ResolutionClass = "retry_scan"
+	ResolutionCorrectConfiguration ResolutionClass = "correct_configuration"
+	ResolutionGrantHostAccess      ResolutionClass = "grant_host_access"
+	ResolutionUpdateRedline        ResolutionClass = "update_redline"
+	ResolutionManualInspection     ResolutionClass = "manual_local_inspection"
+	ResolutionNoneKnown            ResolutionClass = "none_known"
+)
+
+type UnknownReason struct {
+	Code                     UnknownReasonCode
+	Stage                    DiagnosticStage
+	Retryability             Retryability
+	Resolution               ResolutionClass
+	CapabilityID, ProviderID string
+}
+
+func Reason(code UnknownReasonCode) UnknownReason {
+	r := UnknownReason{Code: code, Stage: StageCollection, Retryability: RetryabilityUnknown, Resolution: ResolutionNoneKnown}
+	switch code {
+	case NotConfigured, SecretReferenceUnavailable:
+		r.Stage = StageCapabilityResolution
+		r.Retryability = ConditionallyRetryable
+		r.Resolution = ResolutionCorrectConfiguration
+	case PermissionDenied:
+		r.Stage = StageCapabilityResolution
+		r.Retryability = ConditionallyRetryable
+		r.Resolution = ResolutionGrantHostAccess
+	case Timeout, ConnectionRefused, RouteUnreachable:
+		r.Retryability = Retryable
+		r.Resolution = ResolutionRetryScan
+	case UnsupportedSchema:
+		r.Stage = StageNormalization
+		r.Retryability = NotRetryable
+		r.Resolution = ResolutionUpdateRedline
+	case StaleEvidence, TemporallyInconsistent, RequiredObservationMissing:
+		r.Stage = StageEvaluation
+		r.Resolution = ResolutionManualInspection
+	}
+	return r
+}
+
+type EvidenceRole string
+
+const (
+	EvidenceSupports              EvidenceRole = "supports"
+	EvidenceContradicts           EvidenceRole = "contradicts"
+	EvidenceBounds                EvidenceRole = "bounds"
+	EvidenceContextualizes        EvidenceRole = "contextualizes"
+	EvidenceEstablishesDependency EvidenceRole = "establishes_dependency"
+	EvidenceEstablishesTiming     EvidenceRole = "establishes_timing"
+)
+
+type EvidenceRef struct {
+	ObservationID, ObservationKind string
+	Role                           EvidenceRole
+}
+type EvidenceProblem string
+
+const (
+	EvidenceMissing     EvidenceProblem = "missing"
+	EvidenceStale       EvidenceProblem = "stale"
+	EvidenceConflicting EvidenceProblem = "conflicting"
+	EvidenceUnusable    EvidenceProblem = "unusable"
+)
+
 type MissingEvidence struct {
-	Kind   string
-	Reason UnknownReason
+	ObservationKind string
+	Problem         EvidenceProblem
+	ReasonCode      UnknownReasonCode
 }
 type Thresholds struct {
-	MaxTipAgeSeconds        int64
-	MinVerificationProgress float64
-	MaxHeaderLag            int64
-	WarningAvailablePercent float64
-	FailureAvailablePercent float64
+	MaxTipAgeSeconds                                 int64
+	MinVerificationProgress                          float64
+	MaxHeaderLag                                     int64
+	WarningAvailablePercent, FailureAvailablePercent float64
 }
+
 type ObservationValue interface {
 	observationValue()
 	Validate() error
@@ -105,7 +209,7 @@ type RPCTransportResult struct {
 }
 
 func (RPCTransportResult) observationValue() {}
-func (v RPCTransportResult) Validate() error { return nil }
+func (RPCTransportResult) Validate() error   { return nil }
 
 type BitcoinChainState struct {
 	Blocks, Headers      int64
@@ -117,7 +221,7 @@ type BitcoinChainState struct {
 func (BitcoinChainState) observationValue() {}
 func (v BitcoinChainState) Validate() error {
 	if v.Blocks < 0 || v.Headers < v.Blocks || v.VerificationProgress < 0 || v.VerificationProgress > 1 || v.TipTime.IsZero() {
-		return ErrInvalidObservation
+		return fmt.Errorf("invalid bitcoin chain state")
 	}
 	return nil
 }
@@ -130,7 +234,7 @@ type FilesystemCapacity struct {
 func (FilesystemCapacity) observationValue() {}
 func (v FilesystemCapacity) Validate() error {
 	if v.TotalBytes <= 0 || v.AvailableBytes < 0 || v.AvailableBytes > v.TotalBytes {
-		return ErrInvalidObservation
+		return fmt.Errorf("invalid filesystem capacity")
 	}
 	return nil
 }
@@ -140,74 +244,63 @@ type ClockState struct{ Current time.Time }
 func (ClockState) observationValue() {}
 func (v ClockState) Validate() error {
 	if v.Current.IsZero() {
-		return ErrInvalidObservation
+		return fmt.Errorf("invalid clock state")
 	}
 	return nil
 }
 
-type validationError string
-
-func (e validationError) Error() string { return string(e) }
-
-const ErrInvalidObservation validationError = "invalid observation"
-
-type TypedObservation struct {
-	ID, ScanID, ProbeExecutionID, ComponentID, Kind, SchemaVersion, ProviderID, Sensitivity string
-	ObservedAt                                                                              time.Time
-	Value                                                                                   ObservationValue
+type Observation struct {
+	ID, ScanID, ProbeExecutionID, ComponentID, Kind, SchemaVersion, CapabilityID, ProviderID, Sensitivity string
+	ObservedAt                                                                                            time.Time
+	Value                                                                                                 ObservationValue
 }
 
-func (o TypedObservation) Validate() error {
-	if o.ID == "" || o.ScanID == "" || o.ProbeExecutionID == "" || o.ComponentID == "" || o.Kind == "" || o.SchemaVersion == "" || o.ObservedAt.IsZero() || o.Value == nil {
-		return ErrInvalidObservation
+func (o Observation) Validate() error {
+	if o.ID == "" || o.ScanID == "" || o.ProbeExecutionID == "" || o.ComponentID == "" || o.Kind == "" || o.SchemaVersion == "" || o.CapabilityID == "" || o.ProviderID == "" || o.Sensitivity == "" || o.ObservedAt.IsZero() || o.Value == nil {
+		return fmt.Errorf("invalid observation envelope")
 	}
 	return o.Value.Validate()
 }
 
 type ProbeExecution struct {
-	ID, ScanID, ProbeID   string
-	Outcome               ExecutionOutcome
-	StartedAt, FinishedAt time.Time
-	DurationMS            int64
-	Reason                UnknownReason
+	ID, ScanID, ProbeID, ProbeVersion string
+	Outcome                           ExecutionOutcome
+	StartedAt, FinishedAt             time.Time
+	DurationMS                        int64
+	Limitation                        UnknownReasonCode
 }
 
-// Observation is an approved, normalized fact. It deliberately has no generic payload field.
-type Observation struct {
-	ID, ScanID, Kind, ComponentID string
-	ObservedAt                    time.Time
-	RPCReachable                  *bool
-	Blocks, Headers               *int64
-	VerificationProgress          *float64
-	InitialBlockDownload          *bool
-	TipTime                       *time.Time
-	TotalBytes, AvailableBytes    *int64
-	ReadOnly, MountPresent        *bool
+func (p ProbeExecution) Validate() error {
+	if p.ID == "" || p.ScanID == "" || p.ProbeID == "" || p.ProbeVersion == "" || p.StartedAt.IsZero() || p.FinishedAt.Before(p.StartedAt) || p.DurationMS < 0 {
+		return fmt.Errorf("invalid probe execution")
+	}
+	return nil
 }
+
 type Finding struct {
 	ID, ScanID, Code, ComponentID string
 	Status                        Status
 	Applicability                 Applicability
-	Reasons                       []UnknownReason
-	Evaluator                     string
-	Provenance                    string
-	EvaluatedAt                   time.Time
-	Required                      bool
 	Severity                      Severity
-	Confidence                    float64
-	EvaluatorVersion              string
+	Confidence                    Confidence
+	EvaluatorID, EvaluatorVersion string
+	EvaluatedAt                   time.Time
+	Role                          CoverageRole
 	Evidence                      []EvidenceRef
 	MissingEvidence               []MissingEvidence
+	Reasons                       []UnknownReason
 	Thresholds                    Thresholds
-	Role                          CoverageRole
 }
 
 func (f Finding) Validate() error {
-	if f.ID == "" || f.Code == "" || f.ComponentID == "" || f.Evaluator == "" || f.EvaluatorVersion == "" || f.EvaluatedAt.IsZero() {
-		return validationError("invalid finding")
+	if f.ID == "" || f.ScanID == "" || f.Code == "" || f.ComponentID == "" || f.Status == "" || f.Applicability == "" || f.Severity == "" || f.Confidence == "" || f.EvaluatorID == "" || f.EvaluatorVersion == "" || f.EvaluatedAt.IsZero() || f.Role == "" {
+		return fmt.Errorf("invalid finding")
 	}
 	if f.Status == Unknown && (len(f.Reasons) == 0 || len(f.MissingEvidence) == 0) {
-		return validationError("unknown finding lacks structured evidence")
+		return fmt.Errorf("unknown finding lacks structured evidence")
+	}
+	if f.Status != Unknown && f.Applicability == Applicable && len(f.Evidence) == 0 {
+		return fmt.Errorf("assessed finding lacks evidence")
 	}
 	return nil
 }
@@ -229,4 +322,38 @@ type Scan struct {
 	Observations          []Observation
 	Findings              []Finding
 	Summary               ComponentSummary
+}
+
+func (s Scan) Validate() error {
+	if s.ID == "" || s.StartedAt.IsZero() || s.FinishedAt.Before(s.StartedAt) {
+		return fmt.Errorf("invalid scan")
+	}
+	exec := map[string]bool{}
+	for _, p := range s.Executions {
+		if e := p.Validate(); e != nil {
+			return e
+		}
+		exec[p.ID] = true
+	}
+	obs := map[string]bool{}
+	for _, o := range s.Observations {
+		if e := o.Validate(); e != nil {
+			return e
+		}
+		if !exec[o.ProbeExecutionID] {
+			return fmt.Errorf("observation execution missing")
+		}
+		obs[o.ID] = true
+	}
+	for _, f := range s.Findings {
+		if e := f.Validate(); e != nil {
+			return e
+		}
+		for _, r := range f.Evidence {
+			if !obs[r.ObservationID] {
+				return fmt.Errorf("finding evidence missing")
+			}
+		}
+	}
+	return nil
 }

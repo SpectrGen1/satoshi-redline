@@ -39,8 +39,10 @@ func TestScanSynchronizedHealthy(t *testing.T) {
 		t.Fatalf("got %s/%s", x.Summary.Health, x.Summary.Coverage.State)
 	}
 	for _, o := range x.Observations {
-		if o.Kind == "bitcoin.rpc.response/v1" && o.RPCReachable == nil {
-			t.Fatal("missing rpc observation")
+		if o.Kind == "bitcoin.rpc.transport" {
+			if _, ok := o.Value.(domain.RPCTransportResult); !ok {
+				t.Fatal("missing rpc transport value")
+			}
 		}
 	}
 }

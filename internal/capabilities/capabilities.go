@@ -17,10 +17,10 @@ const (
 )
 
 type BitcoinRPCReadAccess interface {
-	Chain(context.Context) (bitcoinrpc.ChainInfo, domain.UnknownReason, bool)
+	Chain(context.Context) (bitcoinrpc.ChainInfo, domain.UnknownReasonCode, bool)
 }
 type FilesystemStatAccess interface {
-	Stat(context.Context) (FilesystemCapacity, domain.UnknownReason)
+	Stat(context.Context) (FilesystemCapacity, domain.UnknownReasonCode)
 }
 type FilesystemCapacity struct {
 	Total, Available       int64
@@ -35,4 +35,19 @@ type Set struct {
 	Bitcoin    BitcoinRPCReadAccess
 	Filesystem FilesystemStatAccess
 	Clock      Clock
+}
+
+func (s Set) Scope(required, optional []ID) Set {
+	var out Set
+	for _, id := range append(append([]ID{}, required...), optional...) {
+		switch id {
+		case BitcoinRPCRead:
+			out.Bitcoin = s.Bitcoin
+		case FilesystemStat:
+			out.Filesystem = s.Filesystem
+		case ClockRead:
+			out.Clock = s.Clock
+		}
+	}
+	return out
 }

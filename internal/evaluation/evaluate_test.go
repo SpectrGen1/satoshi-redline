@@ -13,15 +13,15 @@ func TestChainFutureTipIsUnknown(t *testing.T) {
 	p := 1.0
 	ibd := false
 	tip := n.Add(2 * time.Minute)
-	o := &domain.Observation{Blocks: &b, Headers: &h, VerificationProgress: &p, InitialBlockDownload: &ibd, TipTime: &tip}
+	o := &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", ObservedAt: n, Value: domain.BitcoinChainState{Blocks: b, Headers: h, VerificationProgress: p, InitialBlockDownload: ibd, TipTime: tip}}
 	f := Chain("s", o, "", app.DefaultConfig().Sync, n)
-	if f[0].Status != domain.Unknown || f[0].Reasons[0] != domain.TemporallyInconsistent {
+	if f[0].Status != domain.Unknown || f[0].Reasons[0].Code != domain.TemporallyInconsistent {
 		t.Fatalf("%+v", f[0])
 	}
 }
 
 func TestSummaryPreservesFailureWithUnknown(t *testing.T) {
-	s := Summary([]domain.Finding{{Status: domain.Failure, Applicability: domain.Applicable, Required: true}, {Status: domain.Unknown, Applicability: domain.Applicable, Required: true, Reasons: []domain.UnknownReason{domain.Timeout}}})
+	s := Summary([]domain.Finding{{Status: domain.Failure, Applicability: domain.Applicable, Role: domain.Required}, {Status: domain.Unknown, Applicability: domain.Applicable, Role: domain.Required, Reasons: []domain.UnknownReason{domain.Reason(domain.Timeout)}}})
 	if s.Health != domain.HealthFailure || s.Coverage.State != domain.Partial {
 		t.Fatalf("got %+v", s)
 	}

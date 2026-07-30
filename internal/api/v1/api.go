@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/engine"
-	"github.com/satoshi-redline/redline/internal/reports/v1"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
 	"net/http"
 	"strings"
@@ -138,13 +137,76 @@ type CoverageResponse struct {
 func scanDTO(x domain.Scan) ScanResponse {
 	return ScanResponse{x.ID, x.StartedAt.UTC().Format(time.RFC3339), x.FinishedAt.UTC().Format(time.RFC3339), string(x.Summary.Health), CoverageResponse{string(x.Summary.Coverage.State), x.Summary.Coverage.ApplicableRequired, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.UnknownRequired}}
 }
-func observationsDTO(a []domain.Observation) []v1.Observation {
-	r := v1.FromDomain(domain.Scan{Observations: a})
-	return r.Observations
+
+type ObservationResponse struct {
+	ID               string `json:"id"`
+	ProbeExecutionID string `json:"probe_execution_id"`
+	ComponentID      string `json:"component_id"`
+	Kind             string `json:"kind"`
+	SchemaVersion    string `json:"schema_version"`
+	ObservedAt       string `json:"observed_at"`
+	CapabilityID     string `json:"capability_id"`
+	ProviderID       string `json:"provider_id"`
+	Sensitivity      string `json:"sensitivity"`
+	Value            any    `json:"value"`
 }
-func findingsDTO(a []domain.Finding) []v1.Finding {
-	r := v1.FromDomain(domain.Scan{Findings: a})
-	return r.Findings
+type RPCTransportValue struct {
+	Reached       bool   `json:"reached"`
+	Authenticated bool   `json:"authenticated"`
+	Category      string `json:"category"`
+}
+type ChainValue struct {
+	Blocks               int64   `json:"blocks"`
+	Headers              int64   `json:"headers"`
+	VerificationProgress float64 `json:"verification_progress"`
+	InitialBlockDownload bool    `json:"initial_block_download"`
+	TipTime              string  `json:"tip_time"`
+}
+type FilesystemValue struct {
+	TotalBytes     int64 `json:"total_bytes"`
+	AvailableBytes int64 `json:"available_bytes"`
+	ReadOnly       bool  `json:"read_only"`
+	MountPresent   bool  `json:"mount_present"`
+}
+type FindingResponse struct {
+	ID               string                   `json:"id"`
+	Code             string                   `json:"code"`
+	Status           string                   `json:"status"`
+	Applicability    string                   `json:"applicability"`
+	Severity         string                   `json:"severity"`
+	Confidence       string                   `json:"confidence"`
+	EvaluatorID      string                   `json:"evaluator_id"`
+	EvaluatorVersion string                   `json:"evaluator_version"`
+	EvaluatedAt      string                   `json:"evaluated_at"`
+	CoverageRole     string                   `json:"coverage_role"`
+	Reasons          []domain.UnknownReason   `json:"unknown_reasons"`
+	Evidence         []domain.EvidenceRef     `json:"evidence"`
+	Missing          []domain.MissingEvidence `json:"missing_evidence"`
+	Thresholds       domain.Thresholds        `json:"thresholds"`
+}
+
+func observationsDTO(a []domain.Observation) []ObservationResponse {
+	out := make([]ObservationResponse, 0, len(a))
+	for _, o := range a {
+		d := ObservationResponse{ID: o.ID, ProbeExecutionID: o.ProbeExecutionID, ComponentID: o.ComponentID, Kind: o.Kind, SchemaVersion: o.SchemaVersion, ObservedAt: o.ObservedAt.UTC().Format(time.RFC3339), CapabilityID: o.CapabilityID, ProviderID: o.ProviderID, Sensitivity: o.Sensitivity}
+		switch v := o.Value.(type) {
+		case domain.RPCTransportResult:
+			d.Value = RPCTransportValue{v.Reached, v.Authenticated, v.Category}
+		case domain.BitcoinChainState:
+			d.Value = ChainValue{v.Blocks, v.Headers, v.VerificationProgress, v.InitialBlockDownload, v.TipTime.UTC().Format(time.RFC3339)}
+		case domain.FilesystemCapacity:
+			d.Value = FilesystemValue{v.TotalBytes, v.AvailableBytes, v.ReadOnly, v.MountPresent}
+		}
+		out = append(out, d)
+	}
+	return out
+}
+func findingsDTO(a []domain.Finding) []FindingResponse {
+	out := make([]FindingResponse, 0, len(a))
+	for _, f := range a {
+		out = append(out, FindingResponse{f.ID, f.Code, string(f.Status), string(f.Applicability), string(f.Severity), string(f.Confidence), f.EvaluatorID, f.EvaluatorVersion, f.EvaluatedAt.UTC().Format(time.RFC3339), string(f.Role), f.Reasons, f.Evidence, f.MissingEvidence, f.Thresholds})
+	}
+	return out
 }
 
 var _ context.Context
