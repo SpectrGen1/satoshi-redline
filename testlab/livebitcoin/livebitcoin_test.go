@@ -8,10 +8,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/getkin/kin-openapi/routers/legacy"
 	apiv1 "github.com/satoshi-redline/redline/internal/api/v1"
 	"github.com/satoshi-redline/redline/internal/app"
 	"github.com/satoshi-redline/redline/internal/domain"
@@ -200,6 +204,16 @@ func assertReportEvidence(t *testing.T, scan domain.Scan, report reportv1.Report
 func exerciseAPI(t *testing.T, store *sqlite.Store, scanID string) []byte {
 	t.Helper()
 	handler := (&apiv1.Server{Store: store}).Handler()
+	_, sourceFile, _, _ := runtime.Caller(0)
+	specPath := filepath.Join(filepath.Dir(sourceFile), "../../schemas/api/v1/openapi.yaml")
+	document, err := openapi3.NewLoader().LoadFromFile(specPath)
+	if err != nil {
+		t.Fatal("could not load the API contract for the live test")
+	}
+	router, err := legacy.NewRouter(document)
+	if err != nil {
+		t.Fatal("could not route the API contract for the live test")
+	}
 	var combined bytes.Buffer
 	for _, path := range []string{
 		"/api/v1/meta",
@@ -215,6 +229,16 @@ func exerciseAPI(t *testing.T, store *sqlite.Store, scanID string) []byte {
 		}
 		if !json.Valid(response.Body.Bytes()) {
 			t.Fatal("live API handler returned invalid JSON")
+		}
+		route, pathParameters, err := router.FindRoute(request)
+		if err != nil {
+			t.Fatal("live API request did not match the API contract")
+		}
+		input := &openapi3filter.RequestValidationInput{Request: request, PathParams: pathParameters, Route: route}
+		output := &openapi3filter.ResponseValidationInput{RequestValidationInput: input, Status: response.Code, Header: response.Header()}
+		output.SetBodyBytes(response.Body.Bytes())
+		if err := openapi3filter.ValidateResponse(context.Background(), output); err != nil {
+			t.Fatal("live API response did not conform to OpenAPI")
 		}
 		combined.Write(response.Body.Bytes())
 	}
