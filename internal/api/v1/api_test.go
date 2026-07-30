@@ -3,7 +3,9 @@ package v1
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 	"github.com/getkin/kin-openapi/routers/legacy"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/satoshi-redline/redline/internal/app"
+	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/engine"
 	"github.com/satoshi-redline/redline/internal/storage/sqlite"
 )
@@ -76,7 +79,17 @@ func validateAPIResponse(t *testing.T, request *http.Request, response *httptest
 	}
 	route, params, e := router.FindRoute(request)
 	if e != nil {
-		t.Fatal(e)
+		if response.Code != http.StatusMethodNotAllowed && response.Code != http.StatusNotFound {
+			t.Fatalf("request did not match contract: %v", e)
+		}
+		var document any
+		if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.Components.Schemas["ErrorEnvelope"].Value.VisitJSON(document); err != nil {
+			t.Fatalf("error response violates OpenAPI: %v", err)
+		}
+		return
 	}
 	input := &openapi3filter.RequestValidationInput{Request: request, PathParams: params, Route: route}
 	output := &openapi3filter.ResponseValidationInput{RequestValidationInput: input, Status: response.Code, Header: response.Header()}
@@ -118,10 +131,125 @@ func TestActualResponsesConformToOpenAPI(t *testing.T) {
 	methodReq := httptest.NewRequest(http.MethodDelete, "/api/v1/meta", nil)
 	methodRec := httptest.NewRecorder()
 	server.ServeHTTP(methodRec, methodReq)
-	contractReq := httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil)
-	validateAPIResponse(t, contractReq, methodRec)
+	validateAPIResponse(t, methodReq, methodRec)
 	if methodRec.Header().Get("Allow") != http.MethodGet {
 		t.Fatal("missing Allow header")
+	}
+}
+
+type fakeStore struct {
+	scan    domain.Scan
+	saveErr error
+	getErr  error
+}
+
+func (s *fakeStore) Save(context.Context, domain.Scan) error { return s.saveErr }
+func (s *fakeStore) Get(context.Context, string) (domain.Scan, error) {
+	return s.scan, s.getErr
+}
+
+func apiContractScan() domain.Scan {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	execution := domain.ProbeExecution{ID: "execution", ScanID: "scan", ProbeID: "test/v1", ProbeVersion: "1.0.0", Outcome: domain.ExecutionCompleted, StartedAt: now, FinishedAt: now}
+	observations := []domain.Observation{
+		{ID: "rpc", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.RPCTransportResult{Reached: true, Authentication: domain.AuthenticationAccepted, Category: "valid_json_rpc_response"}},
+		{ID: "chain", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.BitcoinChainState{Blocks: 1, Headers: 1, VerificationProgress: 1, TipTime: now}},
+		{ID: "filesystem", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary", Kind: "filesystem.capacity", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "filesystem.stat/v1", ProviderID: "test", Sensitivity: "none", Value: domain.FilesystemCapacity{TotalBytes: 10, AvailableBytes: 5, MountPresent: true}},
+		{ID: "clock", ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "system.local", Kind: "system.clock.current", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "clock.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.ClockState{Current: now}},
+	}
+	assessed := domain.Finding{ID: "assessed", ScanID: "scan", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.primary", Status: domain.Pass, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: domain.Required, Evidence: []domain.EvidenceRef{{ObservationID: "rpc", ObservationKind: "bitcoin.rpc.transport", Role: domain.EvidenceSupports}}}
+	unknown := domain.Finding{ID: "unknown", ScanID: "scan", Code: "bitcoin.chain.synchronized", ComponentID: "bitcoin.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: domain.Required, Reasons: []domain.UnknownReason{domain.Reason(domain.StaleEvidence)}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: "bitcoin.chain.state", Problem: domain.EvidenceStale, ReasonCode: domain.StaleEvidence}}}
+	return domain.Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Executions: []domain.ProbeExecution{execution}, Observations: observations, Findings: []domain.Finding{assessed, unknown}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.Healthy, Coverage: domain.CoverageSummary{State: domain.Partial, ApplicableRequired: 2, AssessedRequired: 1, UnknownRequired: 1}}}
+}
+
+func TestAPIContractCoversTypedVariantsAndErrors(t *testing.T) {
+	scan := apiContractScan()
+	handler := (&Server{Runner: engine.Runner{Config: app.DefaultConfig()}, Store: &fakeStore{scan: scan}}).Handler()
+	for _, path := range []string{"/api/v1/scans/scan", "/api/v1/scans/scan/observations", "/api/v1/scans/scan/findings"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		validateAPIResponse(t, request, response)
+	}
+	for _, path := range []string{"/api/v1/scans/scan", "/api/v1/scans/scan/observations", "/api/v1/scans/scan/findings"} {
+		request := httptest.NewRequest(http.MethodDelete, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		validateAPIResponse(t, request, response)
+	}
+
+	unavailable := (&Server{Store: &fakeStore{getErr: errors.New("CANARY_DATABASE")}}).Handler()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/scans/scan", nil)
+	response := httptest.NewRecorder()
+	unavailable.ServeHTTP(response, request)
+	validateAPIResponse(t, request, response)
+
+	missing := (&Server{Store: &fakeStore{getErr: sql.ErrNoRows}}).Handler()
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/scans/missing", nil)
+	response = httptest.NewRecorder()
+	missing.ServeHTTP(response, request)
+	validateAPIResponse(t, request, response)
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/scans/missing/extra/segment", nil)
+	response = httptest.NewRecorder()
+	missing.ServeHTTP(response, request)
+	validateAPIResponse(t, request, response)
+
+	failing := (&Server{Runner: engine.Runner{Config: app.DefaultConfig()}, Store: &fakeStore{saveErr: errors.New("CANARY_SAVE")}}).Handler()
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/scans", nil)
+	response = httptest.NewRecorder()
+	failing.ServeHTTP(response, request)
+	validateAPIResponse(t, request, response)
+}
+
+func TestOpenAPIRejectsInvalidObservationVariants(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	doc, err := openapi3.NewLoader().LoadFromFile(filepath.Join(filepath.Dir(file), "../../../schemas/api/v1/openapi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]any{"id": "o", "probe_execution_id": "p", "component_id": "c", "kind": "bitcoin.rpc.transport", "schema_version": "v1", "observed_at": "2026-01-02T03:04:05Z", "capability_id": "cap", "provider_id": "provider", "sensitivity": "none"}
+	for name, mutate := range map[string]func(map[string]any){
+		"no value": func(map[string]any) {},
+		"two values": func(v map[string]any) {
+			v["bitcoin_rpc_transport"] = map[string]any{"reached": true, "authentication": "accepted", "category": "valid_json_rpc_response"}
+			v["filesystem_capacity"] = map[string]any{"total_bytes": 10, "available_bytes": 5, "read_only": false, "mount_present": true}
+		},
+		"mismatched value": func(v map[string]any) {
+			v["filesystem_capacity"] = map[string]any{"total_bytes": 10, "available_bytes": 5, "read_only": false, "mount_present": true}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := map[string]any{}
+			for key, item := range base {
+				value[key] = item
+			}
+			mutate(value)
+			if err := doc.Components.Schemas["Observation"].Value.VisitJSON(value); err == nil {
+				t.Fatal("invalid observation accepted")
+			}
+		})
+	}
+}
+
+func TestJSONSerializationFailsBeforeSuccessHeaders(t *testing.T) {
+	response := httptest.NewRecorder()
+	write(response, http.StatusOK, make(chan int))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d", response.Code)
+	}
+	var envelope ErrorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "response_unavailable" {
+		t.Fatalf("error = %+v", envelope)
+	}
+}
+
+func TestRequestIDsAreCollisionResistantAndOpaque(t *testing.T) {
+	first, second := requestID(), requestID()
+	if first == second || !strings.HasPrefix(first, "request_") || strings.Contains(first, "/") {
+		t.Fatalf("unsafe request IDs %q %q", first, second)
 	}
 }
 

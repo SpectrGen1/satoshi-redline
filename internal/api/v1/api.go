@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,16 +11,22 @@ import (
 	"github.com/satoshi-redline/redline/internal/domain"
 	"github.com/satoshi-redline/redline/internal/engine"
 	"github.com/satoshi-redline/redline/internal/probes"
-	"github.com/satoshi-redline/redline/internal/storage/sqlite"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 )
 
+const maxJSONResponseBytes = 4 << 20
+
+type ScanStore interface {
+	engine.ScanStore
+	Get(context.Context, string) (domain.Scan, error)
+}
+
 type Server struct {
 	Runner             engine.Runner
-	Store              *sqlite.Store
+	Store              ScanStore
 	HeartbeatInterval  time.Duration
 	StreamWriteTimeout time.Duration
 	mu                 sync.Mutex
@@ -51,11 +59,22 @@ type ErrorEnvelope struct {
 	Error ErrorBody `json:"error"`
 }
 
-func requestID() string { return fmt.Sprintf("request_%d", time.Now().UnixNano()) }
+func requestID() string {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "request_unavailable"
+	}
+	return fmt.Sprintf("request_%x", random[:])
+}
 func write(w http.ResponseWriter, status int, v any) {
+	encoded, err := json.Marshal(v)
+	if err != nil || len(encoded) > maxJSONResponseBytes {
+		encoded = []byte(`{"error":{"code":"response_unavailable","message":"The response could not be encoded.","request_id":"request_unavailable","retryable":false,"details":{}}}`)
+		status = http.StatusInternalServerError
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(append(encoded, '\n'))
 }
 func method(w http.ResponseWriter, r *http.Request, allowed string) bool {
 	if r.Method == allowed {
@@ -102,7 +121,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 	d := MetaDTO{buildinfo.Version, buildinfo.BuildID, 1, "1", 1, []int{1}, []int{1}, []string{"bitcoin_rpc", "filesystem_capacity"}, nil}
 	for _, p := range c.Probes() {
 		x := p.Descriptor()
-		v := ProbeCatalogDTO{ID: x.ID, Version: x.Version, ScanMode: string(x.Mode), ObservationKinds: append([]string(nil), x.ObservationKinds...)}
+		v := ProbeCatalogDTO{ID: x.ID, Version: x.Version, ScanMode: string(x.Mode), RequiredCapabilities: []string{}, OptionalCapabilities: []string{}, SideEffects: []string{}, ObservationKinds: append([]string{}, x.ObservationKinds...)}
 		for _, id := range x.Required {
 			v.RequiredCapabilities = append(v.RequiredCapabilities, string(id))
 		}
@@ -200,6 +219,9 @@ type FSValue struct {
 	ReadOnly       bool  `json:"read_only"`
 	MountPresent   bool  `json:"mount_present"`
 }
+type ClockValue struct {
+	CurrentTime string `json:"current_time"`
+}
 type ObservationDTO struct {
 	ID               string      `json:"id"`
 	ProbeExecutionID string      `json:"probe_execution_id"`
@@ -213,6 +235,7 @@ type ObservationDTO struct {
 	RPC              *RPCValue   `json:"bitcoin_rpc_transport,omitempty"`
 	Chain            *ChainValue `json:"bitcoin_chain_state,omitempty"`
 	Filesystem       *FSValue    `json:"filesystem_capacity,omitempty"`
+	Clock            *ClockValue `json:"clock_state,omitempty"`
 }
 
 func observationsDTO(a []domain.Observation) []ObservationDTO {
@@ -226,6 +249,8 @@ func observationsDTO(a []domain.Observation) []ObservationDTO {
 			d.Chain = &ChainValue{v.Blocks, v.Headers, v.VerificationProgress, v.InitialBlockDownload, v.TipTime.UTC().Format(time.RFC3339)}
 		case domain.FilesystemCapacity:
 			d.Filesystem = &FSValue{v.TotalBytes, v.AvailableBytes, v.ReadOnly, v.MountPresent}
+		case domain.ClockState:
+			d.Clock = &ClockValue{v.Current.UTC().Format(time.RFC3339)}
 		}
 		out = append(out, d)
 	}

@@ -7,13 +7,18 @@ paths:
     get:
       operationId: getMeta
       responses:
-        '200': {description: Build and probe metadata, content: {application/json: {schema: {$ref: '#/components/schemas/Meta'}}}}
+        '200':
+          description: Build and compiled probe metadata
+          content: {application/json: {schema: {$ref: '#/components/schemas/Meta'}}}
         '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /api/v1/scans:
     post:
       operationId: createScan
       responses:
-        '200': {description: Completed scan, content: {application/json: {schema: {$ref: '#/components/schemas/Scan'}}}}
+        '200':
+          description: Synchronously completed and persisted scan
+          content: {application/json: {schema: {$ref: '#/components/schemas/Scan'}}}
         '405': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
   /api/v1/scans/{scan_id}:
@@ -24,6 +29,7 @@ paths:
         '200': {description: Scan summary, content: {application/json: {schema: {$ref: '#/components/schemas/Scan'}}}}
         '404': {$ref: '#/components/responses/Error'}
         '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /api/v1/scans/{scan_id}/observations:
     get:
       operationId: getScanObservations
@@ -31,6 +37,8 @@ paths:
       responses:
         '200': {description: Typed observations, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Observation'}}}}}
         '404': {$ref: '#/components/responses/Error'}
+        '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /api/v1/scans/{scan_id}/findings:
     get:
       operationId: getScanFindings
@@ -38,18 +46,26 @@ paths:
       responses:
         '200': {description: Findings, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Finding'}}}}}
         '404': {$ref: '#/components/responses/Error'}
+        '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /api/v1/events:
     get:
       operationId: streamEvents
       responses:
-        '200': {description: Versioned scan events, content: {text/event-stream: {schema: {type: string}}}}
+        '200': {description: Non-replayable versioned scan events, content: {text/event-stream: {schema: {type: string}}}}
         '405': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
 components:
   parameters:
-    ScanID: {name: scan_id, in: path, required: true, schema: {type: string}}
+    ScanID: {name: scan_id, in: path, required: true, schema: {type: string, minLength: 1}}
   responses:
-    Error: {description: Safe typed error, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}}
+    Error:
+      description: Privacy-safe typed error
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}
   schemas:
+    EmptyDetails:
+      type: object
+      additionalProperties: false
     ErrorEnvelope:
       type: object
       additionalProperties: false
@@ -60,79 +76,184 @@ components:
       additionalProperties: false
       required: [code, message, request_id, retryable, details]
       properties:
-        code: {type: string}
-        message: {type: string}
-        request_id: {type: string}
+        code: {type: string, minLength: 1}
+        message: {type: string, minLength: 1}
+        request_id: {type: string, pattern: '^request_[a-f0-9]{32}$|^request_unavailable$'}
         retryable: {type: boolean}
-        details: {type: object, additionalProperties: false}
+        details: {$ref: '#/components/schemas/EmptyDetails'}
+    ProbeDescriptor:
+      type: object
+      additionalProperties: false
+      required: [probe_id, version, scan_mode, required_capabilities, optional_capabilities, side_effects, observation_kinds]
+      properties:
+        probe_id: {type: string, minLength: 1}
+        version: {type: string, minLength: 1}
+        scan_mode: {type: string, enum: [safe]}
+        required_capabilities: {type: array, items: {type: string, minLength: 1}}
+        optional_capabilities: {type: array, items: {type: string, minLength: 1}}
+        side_effects: {type: array, minItems: 1, items: {type: string, enum: [read_only]}}
+        observation_kinds: {type: array, minItems: 1, items: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}}
     Meta:
       type: object
       additionalProperties: false
       required: [product_version, build_id, api_major, api_contract_revision, event_schema_version, report_versions_readable, report_versions_writable, enabled_features, compiled_probe_catalog]
       properties:
-        product_version: {type: string}
-        build_id: {type: string}
+        product_version: {type: string, minLength: 1}
+        build_id: {type: string, minLength: 1}
         api_major: {type: integer, enum: [1]}
-        api_contract_revision: {type: string}
+        api_contract_revision: {type: string, minLength: 1}
         event_schema_version: {type: integer, enum: [1]}
-        report_versions_readable: {type: array, items: {type: integer}}
-        report_versions_writable: {type: array, items: {type: integer}}
-        enabled_features: {type: array, items: {type: string}}
-        compiled_probe_catalog: {type: array, items: {type: object}}
+        report_versions_readable: {type: array, items: {type: integer, minimum: 1}}
+        report_versions_writable: {type: array, items: {type: integer, minimum: 1}}
+        enabled_features: {type: array, items: {type: string, minLength: 1}}
+        compiled_probe_catalog: {type: array, minItems: 1, items: {$ref: '#/components/schemas/ProbeDescriptor'}}
     Coverage:
       type: object
       additionalProperties: false
       required: [state, applicable_required, assessed_required, unknown_required]
       properties:
         state: {type: string, enum: [complete, partial, minimal, unavailable]}
-        applicable_required: {type: integer}
-        assessed_required: {type: integer}
-        unknown_required: {type: integer}
+        applicable_required: {type: integer, minimum: 0}
+        assessed_required: {type: integer, minimum: 0}
+        unknown_required: {type: integer, minimum: 0}
     Scan:
       type: object
       additionalProperties: false
       required: [id, started_at, finished_at, status, health, coverage]
       properties:
-        id: {type: string}
+        id: {type: string, minLength: 1}
         started_at: {type: string, format: date-time}
         finished_at: {type: string, format: date-time}
-        status: {type: string}
+        status: {type: string, enum: [completed]}
         health: {type: string, enum: [healthy, warning, failure, no_conclusion]}
         coverage: {$ref: '#/components/schemas/Coverage'}
+    RPCTransportValue:
+      type: object
+      additionalProperties: false
+      required: [reached, authentication, category]
+      properties:
+        reached: {type: boolean}
+        authentication: {type: string, enum: [accepted, rejected, unknown]}
+        category: {type: string, minLength: 1}
+    BitcoinChainStateValue:
+      type: object
+      additionalProperties: false
+      required: [blocks, headers, verification_progress, initial_block_download, tip_time]
+      properties:
+        blocks: {type: integer, minimum: 0}
+        headers: {type: integer, minimum: 0}
+        verification_progress: {type: number, minimum: 0, maximum: 1}
+        initial_block_download: {type: boolean}
+        tip_time: {type: string, format: date-time}
+    FilesystemCapacityValue:
+      type: object
+      additionalProperties: false
+      required: [total_bytes, available_bytes, read_only, mount_present]
+      properties:
+        total_bytes: {type: integer, minimum: 1}
+        available_bytes: {type: integer, minimum: 0}
+        read_only: {type: boolean}
+        mount_present: {type: boolean}
+    ClockStateValue:
+      type: object
+      additionalProperties: false
+      required: [current_time]
+      properties: {current_time: {type: string, format: date-time}}
     Observation:
       type: object
       additionalProperties: false
       required: [id, probe_execution_id, component_id, kind, schema_version, observed_at, capability_id, provider_id, sensitivity]
       properties:
-        id: {type: string}
-        probe_execution_id: {type: string}
-        component_id: {type: string}
-        kind: {type: string}
+        id: {type: string, minLength: 1}
+        probe_execution_id: {type: string, minLength: 1}
+        component_id: {type: string, minLength: 1}
+        kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}
         schema_version: {type: string, enum: [v1]}
         observed_at: {type: string, format: date-time}
-        capability_id: {type: string}
-        provider_id: {type: string}
-        sensitivity: {type: string}
-        bitcoin_rpc_transport: {type: object}
-        bitcoin_chain_state: {type: object}
-        filesystem_capacity: {type: object}
+        capability_id: {type: string, minLength: 1}
+        provider_id: {type: string, minLength: 1}
+        sensitivity: {type: string, enum: [none]}
+        bitcoin_rpc_transport: {$ref: '#/components/schemas/RPCTransportValue'}
+        bitcoin_chain_state: {$ref: '#/components/schemas/BitcoinChainStateValue'}
+        filesystem_capacity: {$ref: '#/components/schemas/FilesystemCapacityValue'}
+        clock_state: {$ref: '#/components/schemas/ClockStateValue'}
+      oneOf:
+        - required: [bitcoin_rpc_transport]
+          properties: {kind: {enum: [bitcoin.rpc.transport]}}
+          not: {anyOf: [{required: [bitcoin_chain_state]}, {required: [filesystem_capacity]}, {required: [clock_state]}]}
+        - required: [bitcoin_chain_state]
+          properties: {kind: {enum: [bitcoin.chain.state]}}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [filesystem_capacity]}, {required: [clock_state]}]}
+        - required: [filesystem_capacity]
+          properties: {kind: {enum: [filesystem.capacity]}}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [clock_state]}]}
+        - required: [clock_state]
+          properties: {kind: {enum: [system.clock.current]}}
+          not: {anyOf: [{required: [bitcoin_rpc_transport]}, {required: [bitcoin_chain_state]}, {required: [filesystem_capacity]}]}
+    UnknownReason:
+      type: object
+      additionalProperties: false
+      required: [code, stage, retryability, resolution_class]
+      properties:
+        code: {type: string, minLength: 1}
+        stage: {type: string, enum: [discovery, capability_resolution, collection, normalization, evaluation, correlation]}
+        retryability: {type: string, enum: [retryable, not_retryable, conditionally_retryable, unknown]}
+        resolution_class: {type: string, enum: [retry_scan, correct_configuration, grant_host_access, update_redline, manual_local_inspection, none_known]}
+        capability_id: {type: string, minLength: 1}
+        provider_id: {type: string, minLength: 1}
+    EvidenceReference:
+      type: object
+      additionalProperties: false
+      required: [observation_id, observation_kind, role]
+      properties:
+        observation_id: {type: string, minLength: 1}
+        observation_kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}
+        role: {type: string, enum: [supports, contradicts, bounds, contextualizes, establishes_dependency, establishes_timing]}
+    MissingEvidence:
+      type: object
+      additionalProperties: false
+      required: [observation_kind, problem, reason_code]
+      properties:
+        observation_kind: {type: string, enum: [bitcoin.rpc.transport, bitcoin.chain.state, filesystem.capacity, system.clock.current]}
+        problem: {type: string, enum: [missing, stale, conflicting, unusable]}
+        reason_code: {type: string, minLength: 1}
+    EvaluatorThresholds:
+      type: object
+      additionalProperties: false
+      required: [max_tip_age_seconds, min_verification_progress, max_header_lag, warning_available_percent, failure_available_percent]
+      properties:
+        max_tip_age_seconds: {type: integer, minimum: 0}
+        min_verification_progress: {type: number, minimum: 0, maximum: 1}
+        max_header_lag: {type: integer, minimum: 0}
+        warning_available_percent: {type: number, minimum: 0, maximum: 100}
+        failure_available_percent: {type: number, minimum: 0, maximum: 100}
     Finding:
       type: object
       additionalProperties: false
       required: [id, code, component_id, status, applicability, severity, confidence, evaluator_id, evaluator_version, evaluated_at, coverage_role, unknown_reasons, evidence, missing_evidence, thresholds]
       properties:
-        id: {type: string}
-        code: {type: string}
-        component_id: {type: string}
+        id: {type: string, minLength: 1}
+        code: {type: string, minLength: 1}
+        component_id: {type: string, minLength: 1}
         status: {type: string, enum: [pass, warning, failure, unknown]}
         applicability: {type: string, enum: [applicable, not_applicable, undetermined]}
         severity: {type: string, enum: [none, informational, low, medium, high, critical]}
         confidence: {type: string, enum: [low, medium, high]}
-        evaluator_id: {type: string}
-        evaluator_version: {type: string}
+        evaluator_id: {type: string, minLength: 1}
+        evaluator_version: {type: string, minLength: 1}
         evaluated_at: {type: string, format: date-time}
         coverage_role: {type: string, enum: [required, optional, informational]}
-        unknown_reasons: {type: array, items: {type: object}}
-        evidence: {type: array, items: {type: object}}
-        missing_evidence: {type: array, items: {type: object}}
-        thresholds: {type: object}
+        unknown_reasons: {type: array, items: {$ref: '#/components/schemas/UnknownReason'}}
+        evidence: {type: array, items: {$ref: '#/components/schemas/EvidenceReference'}}
+        missing_evidence: {type: array, items: {$ref: '#/components/schemas/MissingEvidence'}}
+        thresholds: {$ref: '#/components/schemas/EvaluatorThresholds'}
+      oneOf:
+        - properties:
+            status: {enum: [unknown]}
+            unknown_reasons: {minItems: 1}
+            missing_evidence: {minItems: 1}
+        - properties:
+            status: {enum: [pass, warning, failure]}
+            unknown_reasons: {maxItems: 0}
+            missing_evidence: {maxItems: 0}
+            evidence: {minItems: 1}

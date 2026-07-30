@@ -69,6 +69,7 @@ type ObservationDTO struct {
 	RPCTransport     *RPCTransportDTO `json:"bitcoin_rpc_transport,omitempty"`
 	ChainState       *ChainDTO        `json:"bitcoin_chain_state,omitempty"`
 	Filesystem       *FilesystemDTO   `json:"filesystem_capacity,omitempty"`
+	Clock            *ClockDTO        `json:"clock_state,omitempty"`
 }
 type RPCTransportDTO struct {
 	Reached        bool   `json:"reached"`
@@ -87,6 +88,9 @@ type FilesystemDTO struct {
 	AvailableBytes int64 `json:"available_bytes"`
 	ReadOnly       bool  `json:"read_only"`
 	MountPresent   bool  `json:"mount_present"`
+}
+type ClockDTO struct {
+	CurrentTime string `json:"current_time"`
 }
 type ReasonDTO struct {
 	Code            string `json:"code"`
@@ -145,6 +149,8 @@ func FromDomain(x domain.Scan) Report {
 			d.ChainState = &ChainDTO{v.Blocks, v.Headers, v.VerificationProgress, v.InitialBlockDownload, v.TipTime.UTC().Format(time.RFC3339)}
 		case domain.FilesystemCapacity:
 			d.Filesystem = &FilesystemDTO{v.TotalBytes, v.AvailableBytes, v.ReadOnly, v.MountPresent}
+		case domain.ClockState:
+			d.Clock = &ClockDTO{v.Current.UTC().Format(time.RFC3339)}
 		}
 		r.Observations = append(r.Observations, d)
 	}
@@ -170,17 +176,69 @@ func Validate(r Report) error {
 	if r.Format != "satoshi-redline-report" || r.SchemaID != "urn:satoshi-redline:schema:report:v1" || r.FormatVersion != 1 {
 		return fmt.Errorf("invalid report envelope")
 	}
-	obs := map[string]bool{}
-	for _, o := range r.Observations {
-		obs[o.ID] = true
+	if r.ReportID == "" || r.Scan.ID == "" || r.ReportID != "report_"+r.Scan.ID {
+		return fmt.Errorf("invalid report identity")
 	}
+	executions := map[string]bool{}
+	for _, execution := range r.ProbeExecutions {
+		if execution.ID == "" || executions[execution.ID] {
+			return fmt.Errorf("invalid probe execution identity")
+		}
+		executions[execution.ID] = true
+	}
+	obs := map[string]string{}
+	for _, o := range r.Observations {
+		if o.ID == "" {
+			return fmt.Errorf("invalid observation identity")
+		}
+		if _, duplicate := obs[o.ID]; duplicate {
+			return fmt.Errorf("duplicate observation identity")
+		}
+		if !executions[o.ProbeExecutionID] {
+			return fmt.Errorf("invalid observation execution reference")
+		}
+		variants := 0
+		matching := false
+		if o.RPCTransport != nil {
+			variants++
+			matching = matching || o.Kind == "bitcoin.rpc.transport"
+		}
+		if o.ChainState != nil {
+			variants++
+			matching = matching || o.Kind == "bitcoin.chain.state"
+		}
+		if o.Filesystem != nil {
+			variants++
+			matching = matching || o.Kind == "filesystem.capacity"
+		}
+		if o.Clock != nil {
+			variants++
+			matching = matching || o.Kind == "system.clock.current"
+		}
+		if variants != 1 || !matching {
+			return fmt.Errorf("invalid observation value variant")
+		}
+		obs[o.ID] = o.Kind
+	}
+	findings := map[string]bool{}
 	for _, f := range r.Findings {
+		if f.ID == "" || findings[f.ID] {
+			return fmt.Errorf("invalid finding identity")
+		}
+		findings[f.ID] = true
 		if f.Status == "unknown" && (len(f.Reasons) == 0 || len(f.Missing) == 0) {
 			return fmt.Errorf("invalid unknown finding")
 		}
+		if f.Status != "unknown" && (len(f.Evidence) == 0 || len(f.Reasons) != 0 || len(f.Missing) != 0) {
+			return fmt.Errorf("invalid assessed finding")
+		}
 		for _, e := range f.Evidence {
-			if !obs[e.ObservationID] {
+			kind, exists := obs[e.ObservationID]
+			if !exists {
 				return fmt.Errorf("invalid evidence reference")
+			}
+			if kind != e.ObservationKind {
+				return fmt.Errorf("invalid evidence kind")
 			}
 		}
 	}
@@ -210,6 +268,9 @@ func Validate(r Report) error {
 	return nil
 }
 func Marshal(x domain.Scan) ([]byte, error) {
+	if e := x.Validate(); e != nil {
+		return nil, fmt.Errorf("validate report scan: %w", e)
+	}
 	r := FromDomain(x)
 	if e := Validate(r); e != nil {
 		return nil, e

@@ -1,21 +1,245 @@
 {
-  "$schema":"https://json-schema.org/draft/2020-12/schema",
-  "$id":"urn:satoshi-redline:schema:report:v1",
-  "type":"object",
-  "additionalProperties":false,
-  "required":["format","schema_id","format_version","report_id","generated_at","producer","privacy","scan","coverage","probe_executions","observations","findings"],
-  "properties":{
-    "format":{"const":"satoshi-redline-report"},
-    "schema_id":{"const":"urn:satoshi-redline:schema:report:v1"},
-    "format_version":{"const":1},
-    "report_id":{"type":"string"},
-    "generated_at":{"type":"string","format":"date-time"},
-    "producer":{"type":"object","additionalProperties":false,"required":["product_name","product_version","build_id"],"properties":{"product_name":{"type":"string"},"product_version":{"type":"string"},"build_id":{"type":"string"}}},
-    "privacy":{"type":"object","additionalProperties":false,"required":["profile","validated"],"properties":{"profile":{"const":"shareable"},"validated":{"const":true}}},
-    "scan":{"type":"object","additionalProperties":false,"required":["id","started_at","finished_at","status","health"],"properties":{"id":{"type":"string"},"started_at":{"type":"string"},"finished_at":{"type":"string"},"status":{"type":"string"},"health":{"enum":["healthy","warning","failure","no_conclusion"]}}},
-    "coverage":{"type":"object","additionalProperties":false,"required":["state","applicable_required","assessed_required","unknown_required"],"properties":{"state":{"enum":["complete","partial","minimal","unavailable"]},"applicable_required":{"type":"integer"},"assessed_required":{"type":"integer"},"unknown_required":{"type":"integer"}}},
-    "probe_executions":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","probe_id","probe_version","outcome","started_at","finished_at","duration_ms"],"properties":{"id":{"type":"string"},"probe_id":{"type":"string"},"probe_version":{"type":"string"},"outcome":{"enum":["completed","partial","unavailable","failed","cancelled"]},"started_at":{"type":"string"},"finished_at":{"type":"string"},"duration_ms":{"type":"integer"},"limitation_code":{"type":"string"}}}},
-    "observations":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","probe_execution_id","component_id","kind","schema_version","observed_at","capability_id","provider_id","sensitivity"],"properties":{"id":{"type":"string"},"probe_execution_id":{"type":"string"},"component_id":{"type":"string"},"kind":{"enum":["bitcoin.rpc.transport","bitcoin.chain.state","filesystem.capacity","system.clock.current"]},"schema_version":{"const":"v1"},"observed_at":{"type":"string"},"capability_id":{"type":"string"},"provider_id":{"type":"string"},"sensitivity":{"type":"string"},"bitcoin_rpc_transport":{"type":"object"},"bitcoin_chain_state":{"type":"object"},"filesystem_capacity":{"type":"object"}}}},
-    "findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","code","component_id","status","applicability","severity","confidence","evaluator_id","evaluator_version","evaluated_at","coverage_role","unknown_reasons","evidence","missing_evidence","thresholds"],"properties":{"id":{"type":"string"},"code":{"type":"string"},"component_id":{"type":"string"},"status":{"enum":["pass","warning","failure","unknown"]},"applicability":{"enum":["applicable","not_applicable","undetermined"]},"severity":{"enum":["none","informational","low","medium","high","critical"]},"confidence":{"enum":["low","medium","high"]},"evaluator_id":{"type":"string"},"evaluator_version":{"type":"string"},"evaluated_at":{"type":"string"},"coverage_role":{"enum":["required","optional","informational"]},"unknown_reasons":{"type":"array"},"evidence":{"type":"array"},"missing_evidence":{"type":"array"},"thresholds":{"type":"object"}},"allOf":[{"if":{"properties":{"status":{"const":"unknown"}}},"then":{"properties":{"unknown_reasons":{"minItems":1},"missing_evidence":{"minItems":1}}}}]}}
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:satoshi-redline:schema:report:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schema_id", "format_version", "report_id", "generated_at", "producer", "privacy", "scan", "coverage", "probe_executions", "observations", "findings"],
+  "properties": {
+    "format": {"const": "satoshi-redline-report"},
+    "schema_id": {"const": "urn:satoshi-redline:schema:report:v1"},
+    "format_version": {"const": 1},
+    "report_id": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "privacy": {"$ref": "#/$defs/privacy"},
+    "scan": {"$ref": "#/$defs/scan"},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "probe_executions": {"type": "array", "items": {"$ref": "#/$defs/probe_execution"}},
+    "observations": {"type": "array", "items": {"$ref": "#/$defs/observation"}},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
+  },
+  "$defs": {
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_name", "product_version", "build_id"],
+      "properties": {
+        "product_name": {"type": "string", "minLength": 1},
+        "product_version": {"type": "string", "minLength": 1},
+        "build_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "validated"],
+      "properties": {
+        "profile": {"const": "shareable"},
+        "validated": {"const": true}
+      }
+    },
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "started_at", "finished_at", "status", "health"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {"type": "string", "format": "date-time"},
+        "status": {"enum": ["completed"]},
+        "health": {"enum": ["healthy", "warning", "failure", "no_conclusion"]}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "applicable_required", "assessed_required", "unknown_required"],
+      "properties": {
+        "state": {"enum": ["complete", "partial", "minimal", "unavailable"]},
+        "applicable_required": {"type": "integer", "minimum": 0},
+        "assessed_required": {"type": "integer", "minimum": 0},
+        "unknown_required": {"type": "integer", "minimum": 0}
+      }
+    },
+    "probe_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "probe_id", "probe_version", "outcome", "started_at", "finished_at", "duration_ms"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "probe_id": {"type": "string", "minLength": 1},
+        "probe_version": {"type": "string", "minLength": 1},
+        "outcome": {"enum": ["completed", "partial", "unavailable", "failed", "cancelled"]},
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {"type": "string", "format": "date-time"},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "limitation_code": {"type": "string", "minLength": 1}
+      }
+    },
+    "rpc_transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reached", "authentication", "category"],
+      "properties": {
+        "reached": {"type": "boolean"},
+        "authentication": {"enum": ["accepted", "rejected", "unknown"]},
+        "category": {"type": "string", "minLength": 1}
+      }
+    },
+    "chain_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocks", "headers", "verification_progress", "initial_block_download", "tip_time"],
+      "properties": {
+        "blocks": {"type": "integer", "minimum": 0},
+        "headers": {"type": "integer", "minimum": 0},
+        "verification_progress": {"type": "number", "minimum": 0, "maximum": 1},
+        "initial_block_download": {"type": "boolean"},
+        "tip_time": {"type": "string", "format": "date-time"}
+      }
+    },
+    "filesystem_capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_bytes", "available_bytes", "read_only", "mount_present"],
+      "properties": {
+        "total_bytes": {"type": "integer", "minimum": 1},
+        "available_bytes": {"type": "integer", "minimum": 0},
+        "read_only": {"type": "boolean"},
+        "mount_present": {"type": "boolean"}
+      }
+    },
+    "clock_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current_time"],
+      "properties": {"current_time": {"type": "string", "format": "date-time"}}
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "probe_execution_id", "component_id", "kind", "schema_version", "observed_at", "capability_id", "provider_id", "sensitivity"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "probe_execution_id": {"type": "string", "minLength": 1},
+        "component_id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "filesystem.capacity", "system.clock.current"]},
+        "schema_version": {"const": "v1"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "capability_id": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1},
+        "sensitivity": {"enum": ["none"]},
+        "bitcoin_rpc_transport": {"$ref": "#/$defs/rpc_transport"},
+        "bitcoin_chain_state": {"$ref": "#/$defs/chain_state"},
+        "filesystem_capacity": {"$ref": "#/$defs/filesystem_capacity"},
+        "clock_state": {"$ref": "#/$defs/clock_state"}
+      },
+      "oneOf": [
+        {
+          "required": ["bitcoin_rpc_transport"],
+          "properties": {"kind": {"const": "bitcoin.rpc.transport"}},
+          "not": {"anyOf": [{"required": ["bitcoin_chain_state"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}]}
+        },
+        {
+          "required": ["bitcoin_chain_state"],
+          "properties": {"kind": {"const": "bitcoin.chain.state"}},
+          "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["filesystem_capacity"]}, {"required": ["clock_state"]}]}
+        },
+        {
+          "required": ["filesystem_capacity"],
+          "properties": {"kind": {"const": "filesystem.capacity"}},
+          "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["clock_state"]}]}
+        },
+        {
+          "required": ["clock_state"],
+          "properties": {"kind": {"const": "system.clock.current"}},
+          "not": {"anyOf": [{"required": ["bitcoin_rpc_transport"]}, {"required": ["bitcoin_chain_state"]}, {"required": ["filesystem_capacity"]}]}
+        }
+      ]
+    },
+    "unknown_reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "stage", "retryability", "resolution_class"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "stage": {"enum": ["discovery", "capability_resolution", "collection", "normalization", "evaluation", "correlation"]},
+        "retryability": {"enum": ["retryable", "not_retryable", "conditionally_retryable", "unknown"]},
+        "resolution_class": {"enum": ["retry_scan", "correct_configuration", "grant_host_access", "update_redline", "manual_local_inspection", "none_known"]},
+        "capability_id": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "evidence_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_id", "observation_kind", "role"],
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1},
+        "observation_kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "filesystem.capacity", "system.clock.current"]},
+        "role": {"enum": ["supports", "contradicts", "bounds", "contextualizes", "establishes_dependency", "establishes_timing"]}
+      }
+    },
+    "missing_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_kind", "problem", "reason_code"],
+      "properties": {
+        "observation_kind": {"enum": ["bitcoin.rpc.transport", "bitcoin.chain.state", "filesystem.capacity", "system.clock.current"]},
+        "problem": {"enum": ["missing", "stale", "conflicting", "unusable"]},
+        "reason_code": {"type": "string", "minLength": 1}
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_tip_age_seconds", "min_verification_progress", "max_header_lag", "warning_available_percent", "failure_available_percent"],
+      "properties": {
+        "max_tip_age_seconds": {"type": "integer", "minimum": 0},
+        "min_verification_progress": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_header_lag": {"type": "integer", "minimum": 0},
+        "warning_available_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "failure_available_percent": {"type": "number", "minimum": 0, "maximum": 100}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "code", "component_id", "status", "applicability", "severity", "confidence", "evaluator_id", "evaluator_version", "evaluated_at", "coverage_role", "unknown_reasons", "evidence", "missing_evidence", "thresholds"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "code": {"type": "string", "minLength": 1},
+        "component_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["pass", "warning", "failure", "unknown"]},
+        "applicability": {"enum": ["applicable", "not_applicable", "undetermined"]},
+        "severity": {"enum": ["none", "informational", "low", "medium", "high", "critical"]},
+        "confidence": {"enum": ["low", "medium", "high"]},
+        "evaluator_id": {"type": "string", "minLength": 1},
+        "evaluator_version": {"type": "string", "minLength": 1},
+        "evaluated_at": {"type": "string", "format": "date-time"},
+        "coverage_role": {"enum": ["required", "optional", "informational"]},
+        "unknown_reasons": {"type": "array", "items": {"$ref": "#/$defs/unknown_reason"}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_reference"}},
+        "missing_evidence": {"type": "array", "items": {"$ref": "#/$defs/missing_evidence"}},
+        "thresholds": {"$ref": "#/$defs/thresholds"}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {"const": "unknown"},
+            "unknown_reasons": {"minItems": 1},
+            "missing_evidence": {"minItems": 1}
+          }
+        },
+        {
+          "properties": {
+            "status": {"enum": ["pass", "warning", "failure"]},
+            "unknown_reasons": {"maxItems": 0},
+            "missing_evidence": {"maxItems": 0},
+            "evidence": {"minItems": 1}
+          }
+        }
+      ]
+    }
   }
 }
