@@ -3,6 +3,7 @@ package v1
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/satoshi-redline/redline/internal/buildinfo"
 	"github.com/satoshi-redline/redline/internal/domain"
 	reportschema "github.com/satoshi-redline/redline/schemas/reports/v1"
@@ -92,6 +93,8 @@ type ReasonDTO struct {
 	Stage           string `json:"stage"`
 	Retryability    string `json:"retryability"`
 	ResolutionClass string `json:"resolution_class"`
+	CapabilityID    string `json:"capability_id,omitempty"`
+	ProviderID      string `json:"provider_id,omitempty"`
 }
 type EvidenceDTO struct {
 	ObservationID   string `json:"observation_id"`
@@ -146,9 +149,9 @@ func FromDomain(x domain.Scan) Report {
 		r.Observations = append(r.Observations, d)
 	}
 	for _, f := range x.Findings {
-		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Thresholds: ThresholdDTO{f.Thresholds.MaxTipAgeSeconds, f.Thresholds.MinVerificationProgress, f.Thresholds.MaxHeaderLag, f.Thresholds.WarningAvailablePercent, f.Thresholds.FailureAvailablePercent}}
+		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Reasons: []ReasonDTO{}, Evidence: []EvidenceDTO{}, Missing: []MissingDTO{}, Thresholds: ThresholdDTO{f.Thresholds.MaxTipAgeSeconds, f.Thresholds.MinVerificationProgress, f.Thresholds.MaxHeaderLag, f.Thresholds.WarningAvailablePercent, f.Thresholds.FailureAvailablePercent}}
 		for _, v := range f.Reasons {
-			d.Reasons = append(d.Reasons, ReasonDTO{string(v.Code), string(v.Stage), string(v.Retryability), string(v.Resolution)})
+			d.Reasons = append(d.Reasons, ReasonDTO{string(v.Code), string(v.Stage), string(v.Retryability), string(v.Resolution), v.CapabilityID, v.ProviderID})
 		}
 		for _, v := range f.Evidence {
 			d.Evidence = append(d.Evidence, EvidenceDTO{v.ObservationID, v.ObservationKind, string(v.Role)})
@@ -180,6 +183,29 @@ func Validate(r Report) error {
 				return fmt.Errorf("invalid evidence reference")
 			}
 		}
+	}
+	reportJSON, e := json.Marshal(r)
+	if e != nil {
+		return fmt.Errorf("encode report for validation: %w", e)
+	}
+	var schemaDocument, reportDocument any
+	if e = json.Unmarshal(reportschema.Schema, &schemaDocument); e != nil {
+		return fmt.Errorf("decode embedded report schema: %w", e)
+	}
+	if e = json.Unmarshal(reportJSON, &reportDocument); e != nil {
+		return fmt.Errorf("decode report for validation: %w", e)
+	}
+	compiler := jsonschema.NewCompiler()
+	const schemaURL = "urn:satoshi-redline:schema:report:v1"
+	if e = compiler.AddResource(schemaURL, schemaDocument); e != nil {
+		return fmt.Errorf("load report schema: %w", e)
+	}
+	schema, e := compiler.Compile(schemaURL)
+	if e != nil {
+		return fmt.Errorf("compile report schema: %w", e)
+	}
+	if e = schema.Validate(reportDocument); e != nil {
+		return fmt.Errorf("validate report schema: %w", e)
 	}
 	return nil
 }
