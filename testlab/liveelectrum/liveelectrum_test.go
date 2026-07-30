@@ -211,8 +211,21 @@ func exerciseAPI(t *testing.T, store *sqlite.Store, scanID string, config app.Co
 		t.Fatal("could not route OpenAPI")
 	}
 	var combined bytes.Buffer
-	for _, suffix := range []string{"", "/observations", "/findings", "/components", "/graph", "/diagnoses"} {
-		request := httptest.NewRequest(http.MethodGet, "/api/v1/scans/"+scanID+suffix, nil)
+	requests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/v1/meta"},
+		{http.MethodPost, "/api/v1/scans"},
+		{http.MethodGet, "/api/v1/scans/" + scanID},
+		{http.MethodGet, "/api/v1/scans/" + scanID + "/observations"},
+		{http.MethodGet, "/api/v1/scans/" + scanID + "/findings"},
+		{http.MethodGet, "/api/v1/scans/" + scanID + "/components"},
+		{http.MethodGet, "/api/v1/scans/" + scanID + "/graph"},
+		{http.MethodGet, "/api/v1/scans/" + scanID + "/diagnoses"},
+	}
+	for _, apiRequest := range requests {
+		request := httptest.NewRequest(apiRequest.method, apiRequest.path, nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK || !json.Valid(response.Body.Bytes()) {
