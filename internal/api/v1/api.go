@@ -46,10 +46,7 @@ func (s *Server) scans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.notify("started")
-	x, e := s.Runner.Scan(r.Context())
-	if e == nil {
-		e = s.Store.Save(r.Context(), x)
-	}
+	x, e := s.Runner.ScanAndPersist(r.Context(), s.Store)
 	if e != nil {
 		http.Error(w, "scan could not be completed", 500)
 		return

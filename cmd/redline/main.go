@@ -31,7 +31,13 @@ func main() {
 		os.Exit(2)
 	}
 	if args[0] == "scan" {
-		x, e := engine.Runner{Config: c}.Scan(context.Background())
+		s, openErr := sqlite.Open(c.DatabasePath)
+		if openErr != nil {
+			fmt.Fprintln(os.Stderr, "database unavailable")
+			os.Exit(1)
+		}
+		defer s.Close()
+		x, e := (engine.Runner{Config: c}).ScanAndPersist(context.Background(), s)
 		if e != nil {
 			fmt.Fprintln(os.Stderr, "scan failed")
 			os.Exit(1)
@@ -40,13 +46,14 @@ func main() {
 			_ = json.NewEncoder(os.Stdout).Encode(v1.FromDomain(x))
 			return
 		}
-		fmt.Printf("Health: %s\nRequired coverage: %s (%d/%d assessed)\n", x.Summary.Health, x.Summary.Coverage.State, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.ApplicableRequired)
+		fmt.Printf("Scan ID: %s\nHealth: %s\nRequired coverage: %s (%d/%d assessed)\n", x.ID, x.Summary.Health, x.Summary.Coverage.State, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.ApplicableRequired)
 		return
 	}
 	if args[0] == "report" && len(args) == 2 {
 		s, e := sqlite.Open(c.DatabasePath)
 		if e != nil {
-			panic(e)
+			fmt.Fprintln(os.Stderr, "database unavailable")
+			os.Exit(1)
 		}
 		defer s.Close()
 		x, e := s.Get(context.Background(), args[1])

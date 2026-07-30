@@ -16,6 +16,21 @@ type Runner struct {
 	Config app.Config
 	Now    func() time.Time
 }
+type ScanStore interface {
+	Save(context.Context, domain.Scan) error
+}
+
+// ScanAndPersist is the single application workflow shared by CLI and daemon.
+func (r Runner) ScanAndPersist(ctx context.Context, store ScanStore) (domain.Scan, error) {
+	x, e := r.Scan(ctx)
+	if e != nil {
+		return x, e
+	}
+	if e = store.Save(ctx, x); e != nil {
+		return x, e
+	}
+	return x, nil
+}
 
 func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	now := r.now()
