@@ -179,6 +179,13 @@ func TestConnectionTimeoutRefusalAndCancellation(t *testing.T) {
 	}
 }
 
+func TestNetworkReasonClassifiesHostResolutionFailure(t *testing.T) {
+	reason := networkReason(context.Background(), &net.DNSError{Err: "CANARY_DNS_ERROR", Name: "CANARY_HOST", IsNotFound: true})
+	if reason != domain.RouteUnreachable {
+		t.Fatalf("DNS failure classified as %s", reason)
+	}
+}
+
 func TestTLSFailureProvesDestinationReachability(t *testing.T) {
 	endpoint := fakeEndpoint(t, func(connection net.Conn) {
 		_, _ = connection.Write([]byte("CANARY_TLS_ERROR\n"))

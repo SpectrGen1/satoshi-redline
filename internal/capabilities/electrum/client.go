@@ -320,6 +320,10 @@ func networkReason(ctx context.Context, err error) domain.UnknownReasonCode {
 	if errors.As(err, &networkError) && networkError.Timeout() {
 		return domain.Timeout
 	}
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) && (dnsError.IsNotFound || dnsError.IsTemporary) {
+		return domain.RouteUnreachable
+	}
 	if errors.Is(err, syscall.ECONNREFUSED) {
 		return domain.ConnectionRefused
 	}
