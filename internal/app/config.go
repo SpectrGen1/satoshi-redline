@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -10,11 +11,18 @@ import (
 
 type Config struct {
 	Bitcoin      BitcoinConfig        `json:"bitcoin"`
+	Electrum     ElectrumConfig       `json:"electrum"`
 	API          APIConfig            `json:"api"`
 	DatabasePath string               `json:"database_path"`
 	RPCTimeoutMS int                  `json:"rpc_timeout_ms"`
 	Sync         SyncThresholds       `json:"synchronization"`
 	Filesystem   FilesystemThresholds `json:"filesystem"`
+}
+type ElectrumConfig struct {
+	Enabled            bool   `json:"enabled"`
+	Endpoint           string `json:"endpoint"`
+	TimeoutMS          int    `json:"timeout_ms"`
+	BitcoinComponentID string `json:"bitcoin_component_id"`
 }
 type BitcoinConfig struct {
 	RPCEndpoint   string `json:"rpc_endpoint"`
@@ -36,7 +44,7 @@ type FilesystemThresholds struct {
 }
 
 func DefaultConfig() Config {
-	return Config{API: APIConfig{"127.0.0.1:8383"}, DatabasePath: "redline.db", RPCTimeoutMS: 5000, Sync: SyncThresholds{7200, .999, 2}, Filesystem: FilesystemThresholds{15, 5}}
+	return Config{Electrum: ElectrumConfig{TimeoutMS: 5000}, API: APIConfig{"127.0.0.1:8383"}, DatabasePath: "redline.db", RPCTimeoutMS: 5000, Sync: SyncThresholds{7200, .999, 2}, Filesystem: FilesystemThresholds{15, 5}}
 }
 func Load(path string) (Config, error) {
 	c := DefaultConfig()
@@ -68,6 +76,26 @@ func Load(path string) (Config, error) {
 		}
 		c.RPCTimeoutMS = n
 	}
+	if v := os.Getenv("REDLINE_ELECTRUM_ENABLED"); v != "" {
+		enabled, e := strconv.ParseBool(v)
+		if e != nil {
+			return c, fmt.Errorf("invalid Electrum enabled override")
+		}
+		c.Electrum.Enabled = enabled
+	}
+	if v := os.Getenv("REDLINE_ELECTRUM_ENDPOINT"); v != "" {
+		c.Electrum.Endpoint = v
+	}
+	if v := os.Getenv("REDLINE_ELECTRUM_TIMEOUT_MS"); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil {
+			return c, fmt.Errorf("invalid Electrum timeout override")
+		}
+		c.Electrum.TimeoutMS = n
+	}
+	if v := os.Getenv("REDLINE_ELECTRUM_BITCOIN_COMPONENT_ID"); v != "" {
+		c.Electrum.BitcoinComponentID = v
+	}
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
@@ -79,6 +107,15 @@ func (c Config) Validate() error {
 	}
 	if c.Filesystem.FailureAvailablePercent < 0 || c.Filesystem.WarningAvailablePercent > 100 || c.Filesystem.FailureAvailablePercent > c.Filesystem.WarningAvailablePercent {
 		return fmt.Errorf("invalid filesystem thresholds")
+	}
+	if c.Electrum.Enabled {
+		if c.Electrum.Endpoint == "" || c.Electrum.BitcoinComponentID != "bitcoin.primary" || c.Electrum.TimeoutMS < 1 {
+			return fmt.Errorf("enabled Electrum requires endpoint, timeout, and bitcoin.primary binding")
+		}
+		endpoint, err := url.Parse(c.Electrum.Endpoint)
+		if err != nil || (endpoint.Scheme != "tcp" && endpoint.Scheme != "ssl") || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" {
+			return fmt.Errorf("invalid Electrum endpoint")
+		}
 	}
 	return nil
 }

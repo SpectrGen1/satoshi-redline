@@ -47,16 +47,22 @@ func validScan() Scan {
 	execution := ProbeExecution{ID: "execution", ScanID: "scan", ProbeID: "probe/v1", ProbeVersion: "1.0.0", Outcome: ExecutionCompleted, StartedAt: now, FinishedAt: now}
 	observation := Observation{ID: "observation", ScanID: "scan", ProbeExecutionID: execution.ID, ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: RPCTransportResult{Reached: true, Authentication: AuthenticationAccepted, Category: "valid_json_rpc_response"}}
 	finding := Finding{ID: "finding", ScanID: "scan", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.primary", Status: Pass, Applicability: Applicable, Severity: SeverityNone, Confidence: ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: Required, Evidence: []EvidenceRef{{ObservationID: observation.ID, ObservationKind: observation.Kind, Role: EvidenceSupports}}}
-	return Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Executions: []ProbeExecution{execution}, Observations: []Observation{observation}, Findings: []Finding{finding}, Summary: ComponentSummary{ComponentID: "bitcoin.primary", Health: Healthy, Coverage: CoverageSummary{State: Complete, ApplicableRequired: 1, AssessedRequired: 1}}}
+	return Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Components: BaseComponents(false), Executions: []ProbeExecution{execution}, Observations: []Observation{observation}, Findings: []Finding{finding}, Summary: ComponentSummary{ComponentID: "bitcoin.primary", Health: Healthy, Coverage: CoverageSummary{State: Complete, ApplicableRequired: 1, AssessedRequired: 1}}}
 }
 
 func TestScanReferentialInvariants(t *testing.T) {
+	if err := validScan().Validate(); err != nil {
+		t.Fatalf("valid fixture rejected: %v", err)
+	}
 	tests := []struct {
 		name   string
 		mutate func(*Scan)
 	}{
 		{"execution scan", func(s *Scan) { s.Executions[0].ScanID = "other" }},
 		{"execution outcome", func(s *Scan) { s.Executions[0].Outcome = "" }},
+		{"duplicate component", func(s *Scan) { s.Components = append(s.Components, s.Components[0]) }},
+		{"observation component", func(s *Scan) { s.Observations[0].ComponentID = "missing" }},
+		{"finding component", func(s *Scan) { s.Findings[0].ComponentID = "missing" }},
 		{"observation scan", func(s *Scan) { s.Observations[0].ScanID = "other" }},
 		{"observation execution", func(s *Scan) { s.Observations[0].ProbeExecutionID = "missing" }},
 		{"observation kind", func(s *Scan) { s.Observations[0].Kind = "filesystem.capacity" }},
@@ -72,6 +78,41 @@ func TestScanReferentialInvariants(t *testing.T) {
 			tt.mutate(&scan)
 			if err := scan.Validate(); err == nil {
 				t.Fatal("invalid scan accepted")
+			}
+		})
+	}
+}
+
+func TestDependencyGraphInvariants(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	scan := validScan()
+	scan.Components = BaseComponents(true)
+	scan.DependencyEdges = []DependencyEdge{{
+		ID: "electrum.primary-uses-chain-from-bitcoin.primary", SourceComponentID: "electrum.primary",
+		DestinationComponentID: "bitcoin.primary", Relationship: UsesChainFrom,
+		Provenance: ProvenanceConfiguration, Confidence: ConfidenceHigh, RecordedAt: now,
+	}}
+	if err := scan.Validate(); err != nil {
+		t.Fatalf("valid dependency graph rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Scan)
+	}{
+		{"missing source", func(s *Scan) { s.DependencyEdges[0].SourceComponentID = "missing" }},
+		{"missing destination", func(s *Scan) { s.DependencyEdges[0].DestinationComponentID = "missing" }},
+		{"invalid relationship", func(s *Scan) { s.DependencyEdges[0].Relationship = "unknown" }},
+		{"invalid source kind", func(s *Scan) { s.DependencyEdges[0].SourceComponentID = "system.local" }},
+		{"duplicate edge", func(s *Scan) { s.DependencyEdges = append(s.DependencyEdges, s.DependencyEdges[0]) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := scan
+			candidate.Components = append([]Component(nil), scan.Components...)
+			candidate.DependencyEdges = append([]DependencyEdge(nil), scan.DependencyEdges...)
+			tt.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("invalid dependency graph accepted")
 			}
 		})
 	}

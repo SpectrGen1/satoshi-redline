@@ -68,6 +68,121 @@ const (
 	Unavailable CoverageState = "unavailable"
 )
 
+type ComponentKind string
+
+const (
+	ComponentBitcoinNode     ComponentKind = "bitcoin-node"
+	ComponentElectrumBackend ComponentKind = "electrum-backend"
+	ComponentLocalSystem     ComponentKind = "local-system"
+	ComponentFilesystem      ComponentKind = "filesystem"
+)
+
+type ImplementationFamily string
+
+const (
+	ImplementationBitcoin    ImplementationFamily = "bitcoin"
+	ImplementationElectrum   ImplementationFamily = "electrum"
+	ImplementationSystem     ImplementationFamily = "local-system"
+	ImplementationFilesystem ImplementationFamily = "filesystem"
+)
+
+type InventoryProvenance string
+
+const (
+	ProvenanceConfiguration InventoryProvenance = "configuration"
+	ProvenanceBuiltIn       InventoryProvenance = "built_in"
+)
+
+type InventoryState string
+
+const (
+	InventoryConfigured InventoryState = "configured"
+	InventoryDiscovered InventoryState = "discovered"
+)
+
+type Component struct {
+	ID                    string
+	Kind                  ComponentKind
+	ImplementationFamily  ImplementationFamily
+	ImplementationVersion string
+	DisplayAlias          string
+	Provenance            InventoryProvenance
+	State                 InventoryState
+}
+
+func (c Component) Validate() error {
+	if c.ID == "" || c.DisplayAlias == "" || c.Provenance == "" || c.State == "" {
+		return fmt.Errorf("invalid component")
+	}
+	switch c.Kind {
+	case ComponentBitcoinNode:
+		if c.ID != "bitcoin.primary" || c.ImplementationFamily != ImplementationBitcoin {
+			return fmt.Errorf("invalid bitcoin component")
+		}
+	case ComponentElectrumBackend:
+		if c.ID != "electrum.primary" || c.ImplementationFamily != ImplementationElectrum {
+			return fmt.Errorf("invalid electrum component")
+		}
+	case ComponentLocalSystem:
+		if c.ID != "system.local" || c.ImplementationFamily != ImplementationSystem {
+			return fmt.Errorf("invalid system component")
+		}
+	case ComponentFilesystem:
+		if c.ID != "filesystem.bitcoin-data" || c.ImplementationFamily != ImplementationFilesystem {
+			return fmt.Errorf("invalid filesystem component")
+		}
+	default:
+		return fmt.Errorf("invalid component kind")
+	}
+	switch c.Provenance {
+	case ProvenanceConfiguration, ProvenanceBuiltIn:
+	default:
+		return fmt.Errorf("invalid component provenance")
+	}
+	switch c.State {
+	case InventoryConfigured, InventoryDiscovered:
+	default:
+		return fmt.Errorf("invalid component state")
+	}
+	return nil
+}
+
+type RelationshipKind string
+
+const UsesChainFrom RelationshipKind = "uses_chain_from"
+
+type DependencyEdge struct {
+	ID                     string
+	SourceComponentID      string
+	DestinationComponentID string
+	Relationship           RelationshipKind
+	Provenance             InventoryProvenance
+	Confidence             Confidence
+	RecordedAt             time.Time
+}
+
+func (e DependencyEdge) Validate() error {
+	if e.ID == "" || e.SourceComponentID == "" || e.DestinationComponentID == "" || e.RecordedAt.IsZero() {
+		return fmt.Errorf("invalid dependency edge")
+	}
+	if e.Relationship != UsesChainFrom || e.Provenance != ProvenanceConfiguration || e.Confidence != ConfidenceHigh {
+		return fmt.Errorf("invalid dependency relationship")
+	}
+	return nil
+}
+
+func BaseComponents(includeElectrum bool) []Component {
+	out := []Component{
+		{ID: "bitcoin.primary", Kind: ComponentBitcoinNode, ImplementationFamily: ImplementationBitcoin, DisplayAlias: "Bitcoin node", Provenance: ProvenanceConfiguration, State: InventoryConfigured},
+		{ID: "system.local", Kind: ComponentLocalSystem, ImplementationFamily: ImplementationSystem, DisplayAlias: "Local system", Provenance: ProvenanceBuiltIn, State: InventoryConfigured},
+		{ID: "filesystem.bitcoin-data", Kind: ComponentFilesystem, ImplementationFamily: ImplementationFilesystem, DisplayAlias: "Bitcoin data filesystem", Provenance: ProvenanceConfiguration, State: InventoryConfigured},
+	}
+	if includeElectrum {
+		out = append(out, Component{ID: "electrum.primary", Kind: ComponentElectrumBackend, ImplementationFamily: ImplementationElectrum, DisplayAlias: "Electrum backend", Provenance: ProvenanceConfiguration, State: InventoryConfigured})
+	}
+	return out
+}
+
 type ExecutionOutcome string
 
 const (
@@ -390,6 +505,8 @@ type Scan struct {
 	ID                    string
 	StartedAt, FinishedAt time.Time
 	Status                string
+	Components            []Component
+	DependencyEdges       []DependencyEdge
 	Executions            []ProbeExecution
 	Observations          []Observation
 	Findings              []Finding
@@ -401,6 +518,37 @@ func (s Scan) Validate() error {
 		s.Summary.Coverage.ApplicableRequired < 0 || s.Summary.Coverage.AssessedRequired < 0 || s.Summary.Coverage.UnknownRequired < 0 ||
 		s.Summary.Coverage.AssessedRequired+s.Summary.Coverage.UnknownRequired != s.Summary.Coverage.ApplicableRequired {
 		return fmt.Errorf("invalid scan")
+	}
+	components := map[string]ComponentKind{}
+	for _, component := range s.Components {
+		if e := component.Validate(); e != nil {
+			return e
+		}
+		if _, duplicate := components[component.ID]; duplicate {
+			return fmt.Errorf("duplicate component")
+		}
+		components[component.ID] = component.Kind
+	}
+	if len(components) == 0 {
+		return fmt.Errorf("scan has no component inventory")
+	}
+	edges := map[string]bool{}
+	for _, edge := range s.DependencyEdges {
+		if e := edge.Validate(); e != nil {
+			return e
+		}
+		if edges[edge.ID] {
+			return fmt.Errorf("duplicate dependency edge")
+		}
+		edges[edge.ID] = true
+		source, sourceOK := components[edge.SourceComponentID]
+		destination, destinationOK := components[edge.DestinationComponentID]
+		if !sourceOK || !destinationOK {
+			return fmt.Errorf("dependency edge component missing")
+		}
+		if edge.Relationship == UsesChainFrom && (source != ComponentElectrumBackend || destination != ComponentBitcoinNode) {
+			return fmt.Errorf("invalid dependency component kinds")
+		}
 	}
 	exec := map[string]bool{}
 	for _, p := range s.Executions {
@@ -420,6 +568,9 @@ func (s Scan) Validate() error {
 		if o.ScanID != s.ID {
 			return fmt.Errorf("observation belongs to another scan")
 		}
+		if _, exists := components[o.ComponentID]; !exists {
+			return fmt.Errorf("observation component missing")
+		}
 		if !exec[o.ProbeExecutionID] {
 			return fmt.Errorf("observation execution missing")
 		}
@@ -436,6 +587,9 @@ func (s Scan) Validate() error {
 		}
 		if f.ScanID != s.ID || findings[f.ID] {
 			return fmt.Errorf("invalid finding reference")
+		}
+		if _, exists := components[f.ComponentID]; !exists {
+			return fmt.Errorf("finding component missing")
 		}
 		findings[f.ID] = true
 		if f.Role == Required && f.Applicability == Applicable {
@@ -458,6 +612,9 @@ func (s Scan) Validate() error {
 	}
 	if applicable != s.Summary.Coverage.ApplicableRequired || assessed != s.Summary.Coverage.AssessedRequired || unknown != s.Summary.Coverage.UnknownRequired {
 		return fmt.Errorf("coverage does not match findings")
+	}
+	if _, exists := components[s.Summary.ComponentID]; !exists {
+		return fmt.Errorf("summary component missing")
 	}
 	switch s.Summary.Coverage.State {
 	case Complete:

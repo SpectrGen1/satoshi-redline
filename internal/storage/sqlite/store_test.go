@@ -23,13 +23,61 @@ func TestPersistenceContainsNormalizedFields(t *testing.T) {
 	ex := domain.ProbeExecution{ID: "p", ScanID: "s", ProbeID: "bitcoin.chain-state/v1", ProbeVersion: "1.0.0", Outcome: domain.ExecutionCompleted, StartedAt: n, FinishedAt: n}
 	o := domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.RPCTransportResult{Reached: true, Authentication: domain.AuthenticationAccepted, Category: "valid_json_rpc_response"}}
 	f := domain.Finding{ID: "f", ScanID: "s", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.primary", Status: domain.Pass, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: n, Role: domain.Required, Evidence: []domain.EvidenceRef{{ObservationID: "o", ObservationKind: "bitcoin.rpc.transport", Role: domain.EvidenceSupports}}}
-	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Summary: domain.ComponentSummary{Health: domain.Healthy, Coverage: domain.CoverageSummary{State: domain.Complete, ApplicableRequired: 1, AssessedRequired: 1}}, Executions: []domain.ProbeExecution{ex}, Observations: []domain.Observation{o}, Findings: []domain.Finding{f}}
+	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Components: domain.BaseComponents(false), Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.Healthy, Coverage: domain.CoverageSummary{State: domain.Complete, ApplicableRequired: 1, AssessedRequired: 1}}, Executions: []domain.ProbeExecution{ex}, Observations: []domain.Observation{o}, Findings: []domain.Finding{f}}
 	if e = s.Save(context.Background(), x); e != nil {
 		t.Fatal(e)
 	}
 	y, e := s.Get(context.Background(), "s")
 	if e != nil || len(y.Findings) != 1 {
 		t.Fatalf("%v %+v", e, y)
+	}
+}
+
+func TestComponentGraphRoundTripAndCascade(t *testing.T) {
+	store, scan := corruptionFixture(t)
+	scan.Components = domain.BaseComponents(true)
+	scan.DependencyEdges = []domain.DependencyEdge{{
+		ID: "electrum.primary-uses-chain-from-bitcoin.primary", SourceComponentID: "electrum.primary",
+		DestinationComponentID: "bitcoin.primary", Relationship: domain.UsesChainFrom,
+		Provenance: domain.ProvenanceConfiguration, Confidence: domain.ConfidenceHigh, RecordedAt: scan.StartedAt,
+	}}
+	if _, err := store.db.Exec(`DELETE FROM scans WHERE id='scan'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(context.Background(), scan); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Get(context.Background(), scan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Components) != 4 || len(loaded.DependencyEdges) != 1 {
+		t.Fatalf("component graph not restored: %+v", loaded)
+	}
+	if _, err = store.db.Exec(`DELETE FROM scans WHERE id='scan'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"components", "dependency_edges"} {
+		var count int
+		if err = store.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("orphan in %s: %d %v", table, count, err)
+		}
+	}
+}
+
+func TestComponentForeignKeysRejectCrossScanReferences(t *testing.T) {
+	store, scan := corruptionFixture(t)
+	if _, err := store.db.Exec(`INSERT INTO scans(id,started_at,finished_at,status,health,coverage_state,applicable_required,assessed_required,unknown_required) VALUES(?,?,?,?,?,?,?,?,?)`,
+		"other", ts(scan.StartedAt), ts(scan.FinishedAt), "completed", domain.Healthy, domain.Complete, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO components(scan_id,id,kind,implementation_family,implementation_version,display_alias,provenance,inventory_state) VALUES(?,?,?,?,?,?,?,?)`,
+		"other", "electrum.primary", domain.ComponentElectrumBackend, domain.ImplementationElectrum, "", "Electrum backend", domain.ProvenanceConfiguration, domain.InventoryConfigured); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO dependency_edges(scan_id,id,source_component_id,destination_component_id,relationship_kind,provenance,confidence,recorded_at) VALUES(?,?,?,?,?,?,?,?)`,
+		"scan", "bad", "electrum.primary", "bitcoin.primary", domain.UsesChainFrom, domain.ProvenanceConfiguration, domain.ConfidenceHigh, ts(scan.StartedAt)); err == nil {
+		t.Fatal("cross-scan component reference accepted")
 	}
 }
 
@@ -75,7 +123,7 @@ func corruptionFixture(t *testing.T) (*Store, domain.Scan) {
 	rpc := domain.Observation{ID: "rpc", ScanID: "scan", ProbeExecutionID: execution.ID, ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.RPCTransportResult{Reached: true, Authentication: domain.AuthenticationAccepted, Category: "valid_json_rpc_response"}}
 	chain := domain.Observation{ID: "chain", ScanID: "scan", ProbeExecutionID: execution.ID, ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: domain.BitcoinChainState{Blocks: 1, Headers: 1, VerificationProgress: 1, TipTime: now}}
 	finding := domain.Finding{ID: "finding", ScanID: "scan", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.primary", Status: domain.Pass, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: domain.Required, Evidence: []domain.EvidenceRef{{ObservationID: rpc.ID, ObservationKind: rpc.Kind, Role: domain.EvidenceSupports}}}
-	scan := domain.Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Executions: []domain.ProbeExecution{execution}, Observations: []domain.Observation{rpc, chain}, Findings: []domain.Finding{finding}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.Healthy, Coverage: domain.CoverageSummary{State: domain.Complete, ApplicableRequired: 1, AssessedRequired: 1}}}
+	scan := domain.Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Components: domain.BaseComponents(false), Executions: []domain.ProbeExecution{execution}, Observations: []domain.Observation{rpc, chain}, Findings: []domain.Finding{finding}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.Healthy, Coverage: domain.CoverageSummary{State: domain.Complete, ApplicableRequired: 1, AssessedRequired: 1}}}
 	if err = store.Save(context.Background(), scan); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +188,7 @@ func TestCompleteEvidenceRoundTripAndCascade(t *testing.T) {
 	reason.CapabilityID = "bitcoin.rpc.read/v1"
 	reason.ProviderID = "test"
 	f := domain.Finding{ID: "f", ScanID: "s", Code: "bitcoin.chain.synchronized", ComponentID: "bitcoin.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: n, Role: domain.Required, Reasons: []domain.UnknownReason{reason}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: "bitcoin.chain.state", Problem: domain.EvidenceMissing, ReasonCode: domain.AuthenticationRejected}}, Thresholds: domain.Thresholds{MaxTipAgeSeconds: 60}}
-	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Executions: []domain.ProbeExecution{ex}, Observations: obs, Findings: []domain.Finding{f}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.NoConclusion, Coverage: domain.CoverageSummary{State: domain.Unavailable, ApplicableRequired: 1, UnknownRequired: 1}}}
+	x := domain.Scan{ID: "s", StartedAt: n, FinishedAt: n, Status: "completed", Components: domain.BaseComponents(false), Executions: []domain.ProbeExecution{ex}, Observations: obs, Findings: []domain.Finding{f}, Summary: domain.ComponentSummary{ComponentID: "bitcoin.primary", Health: domain.NoConclusion, Coverage: domain.CoverageSummary{State: domain.Unavailable, ApplicableRequired: 1, UnknownRequired: 1}}}
 	if e = s.Save(context.Background(), x); e != nil {
 		t.Fatal(e)
 	}

@@ -80,7 +80,14 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 	if err != nil {
 		return domain.Scan{}, err
 	}
-	scan := domain.Scan{ID: id, StartedAt: now, Status: "running"}
+	scan := domain.Scan{ID: id, StartedAt: now, Status: "running", Components: domain.BaseComponents(r.Config.Electrum.Enabled)}
+	if r.Config.Electrum.Enabled {
+		scan.DependencyEdges = []domain.DependencyEdge{{
+			ID: "electrum.primary-uses-chain-from-bitcoin.primary", SourceComponentID: "electrum.primary",
+			DestinationComponentID: r.Config.Electrum.BitcoinComponentID, Relationship: domain.UsesChainFrom,
+			Provenance: domain.ProvenanceConfiguration, Confidence: domain.ConfidenceHigh, RecordedAt: now,
+		}}
+	}
 	r.emit(Event{ID: id + "-started", Type: "scan.started", ScanID: id, OccurredAt: now})
 	var rpcObs, transportObs, fsObs *domain.Observation
 	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())

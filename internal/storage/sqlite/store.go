@@ -133,6 +133,16 @@ func (s *Store) Save(ctx context.Context, x domain.Scan) error {
 	if _, e = tx.ExecContext(ctx, `INSERT INTO scans(id,started_at,finished_at,status,health,coverage_state,applicable_required,assessed_required,unknown_required) VALUES(?,?,?,?,?,?,?,?,?)`, x.ID, ts(x.StartedAt), ts(x.FinishedAt), x.Status, x.Summary.Health, x.Summary.Coverage.State, x.Summary.Coverage.ApplicableRequired, x.Summary.Coverage.AssessedRequired, x.Summary.Coverage.UnknownRequired); e != nil {
 		return e
 	}
+	for _, component := range x.Components {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO components(scan_id,id,kind,implementation_family,implementation_version,display_alias,provenance,inventory_state) VALUES(?,?,?,?,?,?,?,?)`, x.ID, component.ID, component.Kind, component.ImplementationFamily, component.ImplementationVersion, component.DisplayAlias, component.Provenance, component.State); e != nil {
+			return e
+		}
+	}
+	for _, edge := range x.DependencyEdges {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO dependency_edges(scan_id,id,source_component_id,destination_component_id,relationship_kind,provenance,confidence,recorded_at) VALUES(?,?,?,?,?,?,?,?)`, x.ID, edge.ID, edge.SourceComponentID, edge.DestinationComponentID, edge.Relationship, edge.Provenance, edge.Confidence, ts(edge.RecordedAt)); e != nil {
+			return e
+		}
+	}
 	for _, p := range x.Executions {
 		if _, e = tx.ExecContext(ctx, `INSERT INTO probe_executions(id,scan_id,probe_id,probe_version,outcome,started_at,finished_at,duration_ms,limitation_code) VALUES(?,?,?,?,?,?,?,?,?)`, p.ID, p.ScanID, p.ProbeID, p.ProbeVersion, p.Outcome, ts(p.StartedAt), ts(p.FinishedAt), p.DurationMS, p.Limitation); e != nil {
 			return e
@@ -203,6 +213,45 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Scan, error) {
 		return x, e
 	}
 	x.Summary.ComponentID = "bitcoin.primary"
+	componentRows, e := s.db.QueryContext(ctx, `SELECT id,kind,implementation_family,implementation_version,display_alias,provenance,inventory_state FROM components WHERE scan_id=? ORDER BY id`, id)
+	if e != nil {
+		return x, e
+	}
+	for componentRows.Next() {
+		var component domain.Component
+		if e = componentRows.Scan(&component.ID, &component.Kind, &component.ImplementationFamily, &component.ImplementationVersion, &component.DisplayAlias, &component.Provenance, &component.State); e != nil {
+			componentRows.Close()
+			return x, e
+		}
+		x.Components = append(x.Components, component)
+	}
+	if e = componentRows.Err(); e != nil {
+		componentRows.Close()
+		return x, e
+	}
+	componentRows.Close()
+	edgeRows, e := s.db.QueryContext(ctx, `SELECT id,source_component_id,destination_component_id,relationship_kind,provenance,confidence,recorded_at FROM dependency_edges WHERE scan_id=? ORDER BY id`, id)
+	if e != nil {
+		return x, e
+	}
+	for edgeRows.Next() {
+		var edge domain.DependencyEdge
+		var recordedAt string
+		if e = edgeRows.Scan(&edge.ID, &edge.SourceComponentID, &edge.DestinationComponentID, &edge.Relationship, &edge.Provenance, &edge.Confidence, &recordedAt); e != nil {
+			edgeRows.Close()
+			return x, e
+		}
+		if edge.RecordedAt, e = parse(recordedAt); e != nil {
+			edgeRows.Close()
+			return x, e
+		}
+		x.DependencyEdges = append(x.DependencyEdges, edge)
+	}
+	if e = edgeRows.Err(); e != nil {
+		edgeRows.Close()
+		return x, e
+	}
+	edgeRows.Close()
 	rows, e := s.db.QueryContext(ctx, `SELECT id,scan_id,probe_id,probe_version,outcome,started_at,finished_at,duration_ms,limitation_code FROM probe_executions WHERE scan_id=? ORDER BY id`, id)
 	if e != nil {
 		return x, e

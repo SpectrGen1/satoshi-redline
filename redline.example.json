@@ -5,6 +5,12 @@
     "cookie_env": "",
     "data_directory": "/var/lib/bitcoin"
   },
+  "electrum": {
+    "enabled": false,
+    "endpoint": "",
+    "timeout_ms": 5000,
+    "bitcoin_component_id": ""
+  },
   "api": {
     "listen_address": "127.0.0.1:8383"
   },
