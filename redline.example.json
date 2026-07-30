@@ -1,0 +1,22 @@
+{
+  "bitcoin": {
+    "rpc_endpoint": "http://127.0.0.1:18443",
+    "cookie_file": "/var/lib/bitcoin/.cookie",
+    "cookie_env": "",
+    "data_directory": "/var/lib/bitcoin"
+  },
+  "api": {
+    "listen_address": "127.0.0.1:8383"
+  },
+  "database_path": "redline.db",
+  "rpc_timeout_ms": 5000,
+  "synchronization": {
+    "max_tip_age_seconds": 7200,
+    "min_verification_progress": 0.999,
+    "max_header_lag": 2
+  },
+  "filesystem": {
+    "warning_available_percent": 15,
+    "failure_available_percent": 5
+  }
+}

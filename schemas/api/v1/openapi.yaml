@@ -1,0 +1,9 @@
+openapi: 3.0.3
+info: {title: SATOSHI//REDLINE local API, version: v1}
+paths:
+  /api/v1/meta: {get: {responses: {'200': {description: API metadata}}}}
+  /api/v1/scans: {post: {responses: {'200': {description: Completed scan}}}}
+  /api/v1/scans/{scan_id}: {get: {parameters: [{name: scan_id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: Scan summary}}}}
+  /api/v1/scans/{scan_id}/observations: {get: {responses: {'200': {description: Approved normalized observations}}}}
+  /api/v1/scans/{scan_id}/findings: {get: {responses: {'200': {description: Findings}}}}
+  /api/v1/events: {get: {responses: {'200': {description: Server-Sent scan progress}}}}

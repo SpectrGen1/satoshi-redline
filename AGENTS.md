@@ -256,3 +256,10 @@ When finishing a change:
 
 Do not invent build, lint, or test commands before the project selects its tooling. Once commands exist, document the canonical commands in this file.
 
+## Canonical commands
+
+```text
+go build ./cmd/redline ./cmd/redlined
+go test ./...
+go vet ./...
+```
