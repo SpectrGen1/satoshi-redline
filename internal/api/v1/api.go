@@ -275,7 +275,7 @@ type FindingDTO struct {
 func findingsDTO(a []domain.Finding) []FindingDTO {
 	out := make([]FindingDTO, 0, len(a))
 	for _, f := range a {
-		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Thresholds: ThresholdDTO{f.Thresholds.MaxTipAgeSeconds, f.Thresholds.MinVerificationProgress, f.Thresholds.MaxHeaderLag, f.Thresholds.WarningAvailablePercent, f.Thresholds.FailureAvailablePercent}}
+		d := FindingDTO{ID: f.ID, Code: f.Code, ComponentID: f.ComponentID, Status: string(f.Status), Applicability: string(f.Applicability), Severity: string(f.Severity), Confidence: string(f.Confidence), EvaluatorID: f.EvaluatorID, EvaluatorVersion: f.EvaluatorVersion, EvaluatedAt: f.EvaluatedAt.UTC().Format(time.RFC3339), CoverageRole: string(f.Role), Reasons: []ReasonDTO{}, Evidence: []EvidenceDTO{}, Missing: []MissingDTO{}, Thresholds: ThresholdDTO{f.Thresholds.MaxTipAgeSeconds, f.Thresholds.MinVerificationProgress, f.Thresholds.MaxHeaderLag, f.Thresholds.WarningAvailablePercent, f.Thresholds.FailureAvailablePercent}}
 		for _, v := range f.Reasons {
 			d.Reasons = append(d.Reasons, ReasonDTO{string(v.Code), string(v.Stage), string(v.Retryability), string(v.Resolution), v.CapabilityID, v.ProviderID})
 		}
