@@ -24,3 +24,12 @@ go test -v ./testlab/livebitcoin
 ```
 
 With the opt-in variables unset, the ordinary `go test ./...` suite skips this test without contacting or inspecting any Bitcoin node.
+
+## Lab helper
+
+Against [bitcoin-vm-lab](https://github.com/SpectrGen1/bitcoin-vm-lab), prefer the operator scripts (Tier 1 host-side smoke; see [lab-integration.md](lab-integration.md) and [ADR-011](ADRs/ADR-011.md)):
+
+```sh
+./scripts/lab/prepare.sh --vm umbrel
+./scripts/lab/smoke.sh --bitcoin-only
+```

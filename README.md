@@ -34,3 +34,44 @@ The RPC cookie is consumed only by the destination-bound provider. Credentials, 
 Current limitations are deliberate: one manual Bitcoin node and one optional manual Electrum backend; no wallet-client checks; synchronous scans only; Linux `statfs` filesystem collection; in-memory non-replayable SSE; no automatic discovery, UI, platform package, privileged helper, continuous monitoring, incidents, DATUM, Stratum, Tor routing, external services, telemetry, updates, plugins, or remediation. Correlation identifies breakpoints and contributing factors but does not claim a root cause in this slice.
 
 The opt-in live procedures are documented in `docs/live-bitcoin-smoke.md` and `docs/live-electrum-smoke.md`. Neither test installs, starts, or stops an Electrum backend.
+
+## Testing against bitcoin-vm-lab
+
+For real Knots + Electrs/Fulcrum targets, use the sibling **bitcoin-vm-lab** project (typically `~/projects/bitcoin-vm-lab`). That repository runs Ubuntu, UmbrelOS, and StartOS under libvirt with a shared **signet** checkpoint and disposable overlays.
+
+Redline **consumes** lab endpoints and (later) the same packages users install. It does not fork a lab-only product and does not drive lab lifecycle from `go test`. See [docs/ADRs/ADR-011.md](docs/ADRs/ADR-011.md) and [docs/lab-integration.md](docs/lab-integration.md).
+
+**1. Bring the lab stack up** (lab repo; see its `README.md` / `docs/OPERATIONS.md`):
+
+```sh
+cd ~/projects/bitcoin-vm-lab
+./bin/bvml status
+./bin/bvml resume umbrel          # or ubuntu / startos
+./bin/bvml index-adapter-setup umbrel
+./bin/bvml info umbrel
+```
+
+**2. Tier 1 host-side smoke** (this repo):
+
+```sh
+./scripts/lab/prepare.sh --vm umbrel    # also: ubuntu | startos
+./scripts/lab/smoke.sh --runtime-dir .lab/runtime/umbrel
+./scripts/lab/scan.sh --runtime-dir .lab/runtime/umbrel
+
+# all three lab consumers:
+./scripts/lab/smoke-all.sh
+```
+
+Runtime state (cookie path, config, env, tunnels) lands in `.lab/runtime/<vm>/` and is gitignored. Cookie **contents** are never logged. Ubuntu/Umbrel/StartOS each use SSH tunnels where host LAN RPC is unusable; StartOS discovers bitcoind/electrs/fulcrum LXC addresses automatically.
+
+**3. Optional in-guest binary** (dev shortcut, not package proof):
+
+```sh
+./scripts/lab/sideload-binary.sh --vm umbrel
+```
+
+Notes:
+
+- `go test ./...` stays offline unless `REDLINE_LIVE_*` is set (or you use `scripts/lab/smoke.sh`).
+- Unhealthy findings can still be a successful integration: the node may lag or report storage pressure while Redline correctly collected evidence.
+- Official packages will live under `packaging/` with no lab-specific fork; agent detail in `AGENTS.md`.

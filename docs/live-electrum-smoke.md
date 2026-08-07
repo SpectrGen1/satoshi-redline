@@ -26,3 +26,14 @@ go test -v ./testlab/liveelectrum
 The test uses the normal scan-and-persist service, reloads the evidence graph, validates API and report contracts, and checks privacy boundaries. It never prints credential contents. Unhealthy findings can be an accurate test result and do not by themselves mean the integration failed.
 
 With any opt-in variable unset, the ordinary test suite skips this package without making an Electrum connection.
+
+## Lab helper
+
+Against [bitcoin-vm-lab](https://github.com/SpectrGen1/bitcoin-vm-lab):
+
+```sh
+./scripts/lab/prepare.sh --vm umbrel --electrum electrs
+./scripts/lab/smoke.sh --electrum-only
+```
+
+See [lab-integration.md](lab-integration.md) and [ADR-011](ADRs/ADR-011.md).

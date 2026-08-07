@@ -267,7 +267,112 @@ go test -race ./...
 go vet ./...
 ```
 
-Optional live integration procedures are documented under `docs/live-bitcoin-smoke.md` and `docs/live-electrum-smoke.md`. They must remain explicitly opt-in and must never start or stop user services.
+Opt-in lab (bitcoin-vm-lab already running; does not manage VMs):
+
+```text
+./scripts/lab/prepare.sh --vm umbrel
+./scripts/lab/smoke.sh --runtime-dir .lab/runtime/umbrel
+./scripts/lab/scan.sh --runtime-dir .lab/runtime/umbrel
+./scripts/lab/smoke-all.sh
+```
+
+Optional live integration procedures are documented under `docs/lab-integration.md`, `docs/live-bitcoin-smoke.md`, and `docs/live-electrum-smoke.md`. Live paths must remain explicitly opt-in and must never start or stop user services or lab VMs from `go test`.
+
+## Lab integration (`bitcoin-vm-lab`)
+
+The sibling repository [bitcoin-vm-lab](https://github.com/SpectrGen1/bitcoin-vm-lab) (local path typically `~/projects/bitcoin-vm-lab`) is the preferred **real-host** fixture for live Bitcoin / Electrum smoke tests and manual `redline` scans. It is **not** a dependency of this Go module: product binaries and `go test` packages never import, build, or drive lab lifecycle through `bvml`. Operators bring a running lab stack with `bvml`, then use opt-in host tooling.
+
+Architecture: [docs/ADRs/ADR-011.md](docs/ADRs/ADR-011.md) (lab is a packaging consumer, not a package fork). Operator guide: [docs/lab-integration.md](docs/lab-integration.md). Scripts: [scripts/lab/](scripts/lab/).
+
+### Verification tiers
+
+| Tier | Meaning | How |
+| ---- | ------- | --- |
+| 0 | Offline engine | `go test ./...` |
+| 1 | Protocol against lab endpoints | `./scripts/lab/prepare.sh` + `smoke.sh` / `scan.sh` |
+| 2 | Same artifact on the guest | `sideload-binary.sh` (dev) or `sideload-package.sh` (when packages exist) |
+| 3 | User publish | Official packages only; no lab-only product |
+
+There is no `packaging/lab` fork. Official packages (when present) live under `packaging/` and are what the lab installs for Tier 2.
+
+### What the lab provides
+
+- Persistent KVM/libvirt guests: **Ubuntu** (Knots producer/consumer), **UmbrelOS**, and **StartOS**
+- Shared **signet** canonical checkpoint with disposable per-VM overlays
+- Protected Electrs / Fulcrum index bases and per-VM index overlays
+- Official appliance packages on Umbrel and StartOS (native lifecycle via `umbreld` / `start-cli`)
+- Operator CLI: `./bin/bvml` (`status`, `info`, `resume` / `start`, `adapter-setup`, `index-adapter-setup`, `stop`)
+
+Lab lifecycle, safety, and recovery rules live in that repository’s `AGENTS.md` and `docs/OPERATIONS.md`. Do not bypass them with ad-hoc `virsh` / docker / disk edits from this project.
+
+### Boundary rules (agents)
+
+1. **Redline does not manage the lab.** Do not start, stop, install, reconfigure, promote, discard, or destroy lab VMs, overlays, or packages from product Go code or from `go test` packages. Lab lifecycle is operator-driven via `bvml`. Opt-in `scripts/lab/*` may read `bvml info` and copy cookies/binaries only.
+2. **Live tests stay opt-in.** Unset `REDLINE_LIVE_*` variables must keep `go test ./...` offline and skip `testlab/livebitcoin` and `testlab/liveelectrum`.
+3. **Cookies and paths stay local credentials.** Copy cookies only into operator-controlled files under `.lab/runtime/` (gitignored) or temp paths; never commit cookies, lab credentials, or guest IPs. Do not log or assert cookie contents.
+4. **Platform fidelity:** Prefer scanning the **guest’s published RPC and Electrum ports** (or an SSH tunnel to guest loopback) rather than substituting a host bitcoind that is not the lab chain under test.
+5. **Filesystem probe is host-local** for Tier 1. `bitcoin.data_directory` is `statfs`’d on the machine running Redline. For protocol-only smoke, a host temp/runtime dir is valid; capacity findings then describe the host, not the guest datadir. In-guest sideload changes that scope.
+6. **No lab-only diagnostic semantics.** Do not add lab build tags, lab thresholds, or lab privacy exceptions in product code.
+
+### Recommended lab readiness (operator)
+
+From `bitcoin-vm-lab` with storage already prepared and a promoted signet checkpoint:
+
+```text
+./bin/bvml status
+./bin/bvml resume umbrel          # or ubuntu / startos
+./bin/bvml index-adapter-setup umbrel
+./bin/bvml adapter-setup umbrel   # when Bitcoin app is not yet native-started
+./bin/bvml info umbrel
+```
+
+Prefer **Umbrel** for the first host-side pass (published RPC + Electrum). Ubuntu needs `./scripts/lab/tunnel-ubuntu.sh` or in-guest sideload. StartOS needs explicit path/endpoint overrides until packaging bindings land.
+
+### Host-side smoke (Tier 1, preferred)
+
+From this repository after the lab guests are ready:
+
+```sh
+./scripts/lab/prepare.sh --vm umbrel
+./scripts/lab/smoke.sh --runtime-dir .lab/runtime/umbrel
+
+./scripts/lab/prepare.sh --vm ubuntu
+./scripts/lab/smoke.sh --runtime-dir .lab/runtime/ubuntu
+
+./scripts/lab/prepare.sh --vm startos
+./scripts/lab/smoke.sh --runtime-dir .lab/runtime/startos
+
+# or all three:
+./scripts/lab/smoke-all.sh
+```
+
+Access details (RPC tunnels, StartOS LXC discovery, cookie `sudo cat`) are in `docs/lab-integration.md`. Raw env-var interface remains in `docs/live-bitcoin-smoke.md` and `docs/live-electrum-smoke.md`.
+
+### In-guest binary (Tier 2-style dev shortcut)
+
+```sh
+./scripts/lab/sideload-binary.sh --vm umbrel
+```
+
+This is not package-store proof. When `packaging/` formats exist, use `sideload-package.sh` with the **same** artifact users would receive.
+
+### Endpoint map (signet lab)
+
+Confirm with `./bin/bvml info <vm>` and guest listeners. Typical values:
+
+| Platform | Bitcoin RPC (from host) | Cookie (inside guest) | Electrs | Fulcrum | Notes |
+| -------- | ----------------------- | --------------------- | ------- | ------- | ----- |
+| Ubuntu   | Host tunnel `38332` → guest loopback | `/srv/bitcoin/signet/.cookie` | Tunnel `50001` | Tunnel `50002` | SSH private key required |
+| Umbrel   | Host tunnel `9332` → guest loopback | `…/app-data/bitcoin-knots/data/bitcoin/signet/.cookie` | Guest IP `50001` | Guest IP `50002` | LAN `:9332` is 403 (rpcallowip) |
+| StartOS  | Host tunnel `18332` → bitcoind LXC `:8332` | package volume `…/main/signet/.cookie` via sudo | Tunnel `25001` | Tunnel `25002` → LXC `:50001` | LXC IPs discovered at prepare |
+
+Signet cookie layout is `$datadir/signet/.cookie`, not `$datadir/.cookie`.
+
+### Interpreting results
+
+- Live smoke **success** means authenticated transport, persisted graph integrity, API/report contracts, and privacy canaries — not that every finding is `pass`.
+- IBD, tip lag, or storage pressure may produce `warning` / `failure` findings while the integration is still correct.
+- Cross-platform runs (Ubuntu vs Umbrel vs StartOS) are separate operator exercises; do not encode lab VM names into product packages without an ADR.
 
 The current release-candidate scope is the manual Bitcoin RPC and configured
 filesystem vertical slice documented in `README.md` and
