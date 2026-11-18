@@ -16,7 +16,7 @@ bitcoin-vm-lab. Does not manage VM lifecycle.
 
 options:
   --vm NAME              umbrel, ubuntu, or startos
-  --electrum KIND        electrs (default), fulcrum, or none
+  --electrum KIND        both (default), electrs, fulcrum, or none
   --runtime-dir PATH     default: .lab/runtime/<vm>
   --skip-cookie-fetch    reuse existing runtime cookie file
   --no-tunnel            do not auto-start SSH tunnel
@@ -39,7 +39,7 @@ EOF
 }
 
 VM=""
-ELECTRUM=electrs
+ELECTRUM=both
 RUNTIME=""
 SKIP_COOKIE=0
 AUTO_TUNNEL=1
@@ -79,8 +79,8 @@ done
 [[ -n "$VM" ]] || die "--vm is required (see --help)"
 lab_validate_vm "$VM"
 case "$ELECTRUM" in
-  electrs|fulcrum|none) ;;
-  *) die "--electrum must be electrs, fulcrum, or none" ;;
+  both|electrs|fulcrum|none) ;;
+  *) die "--electrum must be both, electrs, fulcrum, or none" ;;
 esac
 
 need_cmd ssh
@@ -121,13 +121,27 @@ else
 fi
 
 rpc="$(lab_rpc_endpoint "$VM")"
-electrum_ep="$(lab_electrum_endpoint "$VM" "$ELECTRUM")"
+electrs_ep=""
+fulcrum_ep=""
+case "$ELECTRUM" in
+  both)
+    electrs_ep="$(lab_electrum_endpoint "$VM" electrs)"
+    fulcrum_ep="$(lab_electrum_endpoint "$VM" fulcrum)"
+    ;;
+  electrs)
+    electrs_ep="$(lab_electrum_endpoint "$VM" electrs)"
+    ;;
+  fulcrum)
+    fulcrum_ep="$(lab_electrum_endpoint "$VM" fulcrum)"
+    ;;
+  none) ;;
+esac
 ip_display="${REDLINE_LAB_IP:-}"
 if [[ -z "$ip_display" ]]; then
   ip_display="$(lab_guest_ip "$VM" 2>/dev/null || printf 'n/a')"
 fi
 
-lab_write_config "$CONFIG_FILE" "$rpc" "$COOKIE_FILE" "$FS_PROBE" "$electrum_ep" "$DB_PATH"
+lab_write_config "$CONFIG_FILE" "$rpc" "$COOKIE_FILE" "$FS_PROBE" "$DB_PATH" "$electrs_ep" "$fulcrum_ep"
 chmod 600 "$CONFIG_FILE"
 
 cat >"$ENV_FILE" <<EOF
@@ -143,33 +157,36 @@ export REDLINE_DATA_DIRECTORY=$(printf '%q' "$FS_PROBE")
 export REDLINE_DATABASE_PATH=$(printf '%q' "$DB_PATH")
 EOF
 
-if [[ -n "$electrum_ep" ]]; then
+if [[ -n "$electrs_ep" ]]; then
   cat >>"$ENV_FILE" <<EOF
 export REDLINE_LIVE_ELECTRUM_TEST=1
-export REDLINE_LIVE_ELECTRUM_ENDPOINT=$(printf '%q' "$electrum_ep")
-export REDLINE_ELECTRUM_ENABLED=true
-export REDLINE_ELECTRUM_ENDPOINT=$(printf '%q' "$electrum_ep")
-export REDLINE_ELECTRUM_BITCOIN_COMPONENT_ID=bitcoin.primary
+export REDLINE_LIVE_ELECTRUM_ENDPOINT=$(printf '%q' "$electrs_ep")
 EOF
-else
+fi
+if [[ -n "$fulcrum_ep" ]]; then
+  cat >>"$ENV_FILE" <<EOF
+export REDLINE_LIVE_ELECTRUM_FULCRUM_ENDPOINT=$(printf '%q' "$fulcrum_ep")
+EOF
+fi
+if [[ -z "$electrs_ep" && -z "$fulcrum_ep" ]]; then
   cat >>"$ENV_FILE" <<EOF
 unset REDLINE_LIVE_ELECTRUM_TEST || true
 unset REDLINE_LIVE_ELECTRUM_ENDPOINT || true
-export REDLINE_ELECTRUM_ENABLED=false
-unset REDLINE_ELECTRUM_ENDPOINT || true
+unset REDLINE_LIVE_ELECTRUM_FULCRUM_ENDPOINT || true
 EOF
 fi
 chmod 600 "$ENV_FILE"
 
-python3 - "$META_FILE" "$VM" "$ip_display" "$rpc" "$electrum_ep" "$COOKIE_FILE" "$FS_PROBE" "$CONFIG_FILE" "$DB_PATH" <<'PY'
+python3 - "$META_FILE" "$VM" "$ip_display" "$rpc" "$electrs_ep" "$fulcrum_ep" "$COOKIE_FILE" "$FS_PROBE" "$CONFIG_FILE" "$DB_PATH" <<'PY'
 import json, sys
-out, vm, ip, rpc, electrum, cookie, fs, config, db = sys.argv[1:]
+out, vm, ip, rpc, electrs, fulcrum, cookie, fs, config, db = sys.argv[1:]
 meta = {
     "tier": 1,
     "vm": vm,
     "guest_ip": ip,
     "rpc_endpoint": rpc,
-    "electrum_endpoint": electrum or None,
+    "electrum_electrs_endpoint": electrs or None,
+    "electrum_fulcrum_endpoint": fulcrum or None,
     "cookie_file": cookie,
     "data_directory": fs,
     "config_file": config,
@@ -187,7 +204,7 @@ PY
 chmod 600 "$META_FILE"
 
 note "runtime ready: $RUNTIME"
-note "vm=$VM rpc=$rpc electrum=${electrum_ep:-disabled}"
+note "vm=$VM rpc=$rpc electrs=${electrs_ep:-off} fulcrum=${fulcrum_ep:-off}"
 note "next: ./scripts/lab/smoke.sh --runtime-dir $RUNTIME"
 note "source env: set -a; source $ENV_FILE; set +a"
 printf '%s\n' "$RUNTIME"

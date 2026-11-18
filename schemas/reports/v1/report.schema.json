@@ -65,7 +65,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["component_id", "component_kind", "implementation_family", "display_alias", "provenance", "state"],
       "properties": {
-        "component_id": {"enum": ["bitcoin.primary", "electrum.primary", "system.local", "filesystem.bitcoin-data"]},
+        "component_id": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]{1,63}$"},
         "component_kind": {"enum": ["bitcoin-node", "electrum-backend", "local-system", "filesystem"]},
         "implementation_family": {"enum": ["bitcoin", "electrum", "local-system", "filesystem"]},
         "implementation_version": {"type": "string"},

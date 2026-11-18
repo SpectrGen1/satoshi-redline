@@ -13,7 +13,7 @@ Its primary purpose is to answer:
 
 The project is currently in its bootstrap phase. The accepted architecture decisions are under `docs/ADRs/`.
 
-The current pre-release slice supports one manually configured Bitcoin Core or Bitcoin Knots node and one optional manually configured Electrs or Fulcrum backend with an explicit `uses_chain_from` dependency. It does not discover or manage either service.
+The current pre-release slice supports **N** manually configured Bitcoin Core/Knots nodes and **N** manually configured Electrum backends (Electrs and/or Fulcrum), each with an explicit `uses_chain_from` binding when enabled. It does not discover or manage services. Component `enabled` flags control attention (future UI toggles).
 
 ## Source of Truth
 

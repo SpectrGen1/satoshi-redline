@@ -20,10 +20,9 @@ import (
 )
 
 type Runner struct {
-	Config  app.Config
-	Now     func() time.Time
-	Events  EventSink
-	catalog *probes.Catalog
+	Config app.Config
+	Now    func() time.Time
+	Events EventSink
 }
 type Event struct {
 	ID, Type, ScanID                             string
@@ -73,62 +72,75 @@ func (r Runner) Scan(ctx context.Context) (domain.Scan, error) {
 	return x, nil
 }
 
-// execute performs collection and evaluation without emitting a terminal event.
-// The workflow owner emits exactly one terminal event after all of its work,
-// including persistence when applicable, has succeeded or failed.
 func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 	now := r.now()
 	id, err := newID()
 	if err != nil {
 		return domain.Scan{}, err
 	}
-	scan := domain.Scan{ID: id, StartedAt: now, Status: "running", Components: domain.BaseComponents(r.Config.Electrum.Enabled)}
-	if r.Config.Electrum.Enabled {
-		scan.DependencyEdges = []domain.DependencyEdge{{
-			ID: "electrum.primary-uses-chain-from-bitcoin.primary", SourceComponentID: "electrum.primary",
-			DestinationComponentID: r.Config.Electrum.BitcoinComponentID, Relationship: domain.UsesChainFrom,
-			Provenance: domain.ProvenanceConfiguration, Confidence: domain.ConfidenceHigh, RecordedAt: now,
-		}}
+
+	bitcoinNodes := r.Config.EnabledBitcoinNodes()
+	electrumBackends := r.Config.EnabledElectrumBackends()
+	var invBitcoin []domain.InventoryBitcoin
+	for _, n := range bitcoinNodes {
+		invBitcoin = append(invBitcoin, domain.InventoryBitcoin{ID: n.ID, DisplayAlias: n.DisplayAlias})
 	}
+	var invElectrum []domain.InventoryElectrum
+	for _, b := range electrumBackends {
+		invElectrum = append(invElectrum, domain.InventoryElectrum{ID: b.ID, DisplayAlias: b.DisplayAlias, BitcoinComponentID: b.BitcoinComponentID})
+	}
+	inv := domain.BuildInventory(invBitcoin, invElectrum, now)
+	scan := domain.Scan{ID: id, StartedAt: now, Status: "running", Components: inv.Components, DependencyEdges: inv.Edges}
 	r.emit(Event{ID: id + "-started", Type: "scan.started", ScanID: id, OccurredAt: now})
-	var rpcObs, transportObs, fsObs *domain.Observation
-	var electrumTransportObs, electrumIdentityObs, electrumTipObs, bitcoinHashObs *domain.Observation
-	client, createReason := bitcoinrpc.New(r.Config.Bitcoin.RPCEndpoint, r.Config.Bitcoin.CookieFile, r.Config.Bitcoin.CookieEnv, r.Config.Timeout())
-	caps := capabilities.Set{Filesystem: filesystemProvider{r.Config.Bitcoin.DataDirectory}, Clock: capabilities.SystemClock{}}
-	if client != nil {
-		caps.Bitcoin = client
-	}
-	compiledProbes := []probes.Probe{probes.BitcoinChainState{}, probes.FilesystemCapacity{}}
-	var electrumCreateReason domain.UnknownReasonCode
-	if r.Config.Electrum.Enabled {
-		electrumClient, electrumErr := electrum.New(r.Config.Electrum.Endpoint, time.Duration(r.Config.Electrum.TimeoutMS)*time.Millisecond)
-		if electrumErr == nil {
-			caps.Electrum = electrumClient
-		} else {
-			electrumCreateReason = domain.NotConfigured
+
+	// Subject-scoped capability providers.
+	bitcoinClients := map[string]capabilities.BitcoinRPCReadAccess{}
+	bitcoinCreateReason := map[string]domain.UnknownReasonCode{}
+	fsProviders := map[string]capabilities.FilesystemStatAccess{}
+	for _, node := range bitcoinNodes {
+		client, createReason := bitcoinrpc.New(node.RPCEndpoint, node.CookieFile, node.CookieEnv, r.Config.Timeout())
+		bitcoinCreateReason[node.ID] = createReason
+		if client != nil {
+			bitcoinClients[node.ID] = client
 		}
-		sideEffect := probes.SideEffect(electrum.EndpointSideEffect(r.Config.Electrum.Endpoint))
-		compiledProbes = append(compiledProbes, probes.ElectrumProtocolState{SideEffect: sideEffect, Timeout: time.Duration(r.Config.Electrum.TimeoutMS) * time.Millisecond})
+		fsProviders[node.ID] = filesystemProvider{node.DataDirectory}
 	}
-	catalog, catalogErr := probes.NewCatalog(compiledProbes...)
-	if r.catalog != nil {
-		catalog = *r.catalog
-	} else if catalogErr != nil {
-		return scan, catalogErr
+	electrumClients := map[string]capabilities.ElectrumReadAccess{}
+	electrumCreateReason := map[string]domain.UnknownReasonCode{}
+	for _, backend := range electrumBackends {
+		client, electrumErr := electrum.New(backend.Endpoint, time.Duration(backend.TimeoutMS)*time.Millisecond)
+		if electrumErr == nil {
+			electrumClients[backend.ID] = client
+		} else {
+			electrumCreateReason[backend.ID] = domain.NotConfigured
+		}
 	}
-	rpcReason := createReason
-	var fsReason domain.UnknownReasonCode
-	var electrumReason domain.UnknownReasonCode
-	for _, p := range catalog.Probes() {
+
+	// Observations keyed for evaluation.
+	type bitcoinObs struct {
+		transport, chain, fs *domain.Observation
+		rpcReason, fsReason  domain.UnknownReasonCode
+	}
+	bitcoinCollected := map[string]*bitcoinObs{}
+	for _, node := range bitcoinNodes {
+		bitcoinCollected[node.ID] = &bitcoinObs{rpcReason: bitcoinCreateReason[node.ID]}
+	}
+	type electrumObs struct {
+		transport, identity, tip, bitcoinHash *domain.Observation
+		reason                                domain.UnknownReasonCode
+	}
+	electrumCollected := map[string]*electrumObs{}
+	for _, backend := range electrumBackends {
+		electrumCollected[backend.ID] = &electrumObs{reason: electrumCreateReason[backend.ID]}
+	}
+
+	runProbe := func(p probes.Probe, subject string, caps capabilities.Set) error {
 		d := p.Descriptor()
-		executionID := id + "-" + strings.ReplaceAll(d.ID, "/", "-")
+		executionID := id + "-" + subject + "-" + strings.ReplaceAll(d.ID, "/", "-")
 		started := r.now()
 		r.emit(Event{ID: executionID + "-started", Type: "scan.probe.started", ScanID: id, OccurredAt: started, ProbeID: d.ID})
 		probeCtx, cancel := context.WithTimeout(ctx, d.Timeout)
 		result := p.Collect(probeCtx, caps.Scope(d.Required, d.Optional), id, executionID, started)
-		if d.ID == "electrum.protocol-state/v1" && electrumCreateReason != "" {
-			result.Reason = electrumCreateReason
-		}
 		ctxErr := probeCtx.Err()
 		cancel()
 		done := r.now()
@@ -141,7 +153,10 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 			result.Reason = domain.Cancelled
 		}
 		outcome := executionOutcome(result, parentErr, ctxErr)
-		scan.Executions = append(scan.Executions, domain.ProbeExecution{ID: executionID, ScanID: id, ProbeID: d.ID, ProbeVersion: d.Version, Outcome: outcome, StartedAt: started, FinishedAt: done, DurationMS: done.Sub(started).Milliseconds(), Limitation: result.Reason})
+		scan.Executions = append(scan.Executions, domain.ProbeExecution{
+			ID: executionID, ScanID: id, ProbeID: d.ID, ProbeVersion: d.Version, Outcome: outcome,
+			StartedAt: started, FinishedAt: done, DurationMS: done.Sub(started).Milliseconds(), Limitation: result.Reason,
+		})
 		r.emit(Event{ID: executionID + "-completed", Type: "scan.probe.completed", ScanID: id, OccurredAt: done, ProbeID: d.ID, Outcome: string(outcome)})
 		declared := map[string]bool{}
 		for _, k := range d.ObservationKinds {
@@ -149,64 +164,135 @@ func (r Runner) execute(ctx context.Context) (domain.Scan, error) {
 		}
 		for _, typed := range result.Values {
 			if !declared[typed.Kind] {
-				return domain.Scan{}, fmt.Errorf("probe %s emitted undeclared observation %s", d.ID, typed.Kind)
+				return fmt.Errorf("probe %s emitted undeclared observation %s", d.ID, typed.Kind)
 			}
 			if e := typed.Validate(); e != nil {
-				return domain.Scan{}, e
+				return e
 			}
 			scan.Observations = append(scan.Observations, typed)
 			switch typed.Value.(type) {
 			case domain.RPCTransportResult:
 				o := typed
-				transportObs = &o
-				if result.Reason != "" {
-					rpcReason = result.Reason
+				if bucket := bitcoinCollected[typed.ComponentID]; bucket != nil {
+					bucket.transport = &o
+					if result.Reason != "" {
+						bucket.rpcReason = result.Reason
+					}
 				}
 			case domain.BitcoinChainState:
 				o := typed
-				rpcObs = &o
+				if bucket := bitcoinCollected[typed.ComponentID]; bucket != nil {
+					bucket.chain = &o
+				}
 			case domain.FilesystemCapacity:
 				o := typed
-				fsObs = &o
+				if bucket := bitcoinCollected[typed.ComponentID]; bucket != nil {
+					bucket.fs = &o
+					bucket.fsReason = result.Reason
+				}
 			case domain.ElectrumProtocolTransport:
 				o := typed
-				electrumTransportObs = &o
+				if bucket := electrumCollected[typed.ComponentID]; bucket != nil {
+					bucket.transport = &o
+				}
 			case domain.ElectrumServerIdentity:
 				o := typed
-				electrumIdentityObs = &o
+				if bucket := electrumCollected[typed.ComponentID]; bucket != nil {
+					bucket.identity = &o
+				}
 			case domain.ElectrumChainTip:
 				o := typed
-				electrumTipObs = &o
+				if bucket := electrumCollected[typed.ComponentID]; bucket != nil {
+					bucket.tip = &o
+				}
 			case domain.BitcoinBlockHash:
-				o := typed
-				bitcoinHashObs = &o
+				// Hash is attributed to bitcoin component; attach to electrum run that produced it via scan order.
+				// Find electrum bucket by current subject if this is electrum probe.
+				if bucket := electrumCollected[subject]; bucket != nil {
+					o := typed
+					bucket.bitcoinHash = &o
+				}
 			}
 		}
-		if p.Descriptor().ID == "bitcoin.chain-state/v1" && result.Reason != "" {
-			rpcReason = result.Reason
+		if d.ID == "bitcoin.chain-state/v1" {
+			if bucket := bitcoinCollected[subject]; bucket != nil && result.Reason != "" {
+				bucket.rpcReason = result.Reason
+			}
 		}
-		if p.Descriptor().ID == "filesystem.capacity/v1" {
-			fsReason = result.Reason
+		if d.ID == "filesystem.capacity/v1" {
+			if bucket := bitcoinCollected[subject]; bucket != nil {
+				bucket.fsReason = result.Reason
+			}
 		}
-		if p.Descriptor().ID == "electrum.protocol-state/v1" {
-			electrumReason = result.Reason
+		if d.ID == "electrum.protocol-state/v1" {
+			if bucket := electrumCollected[subject]; bucket != nil {
+				if electrumCreateReason[subject] != "" {
+					bucket.reason = electrumCreateReason[subject]
+				} else {
+					bucket.reason = result.Reason
+				}
+			}
+		}
+		return nil
+	}
+
+	// Bitcoin nodes: chain-state + filesystem.
+	for _, node := range bitcoinNodes {
+		caps := capabilities.Set{
+			Bitcoin:    bitcoinClients[node.ID],
+			Filesystem: fsProviders[node.ID],
+			Clock:      capabilities.SystemClock{},
+		}
+		if err := runProbe(probes.BitcoinChainState{ComponentID: node.ID}, node.ID, caps); err != nil {
+			return scan, err
+		}
+		if err := runProbe(probes.FilesystemCapacity{ComponentID: node.ID}, node.ID, caps); err != nil {
+			return scan, err
 		}
 	}
+
+	// Electrum backends: protocol-state with bound bitcoin capability.
+	for _, backend := range electrumBackends {
+		sideEffect := probes.SideEffect(electrum.EndpointSideEffect(backend.Endpoint))
+		timeout := time.Duration(backend.TimeoutMS) * time.Millisecond
+		caps := capabilities.Set{
+			Electrum: electrumClients[backend.ID],
+			Bitcoin:  bitcoinClients[backend.BitcoinComponentID],
+			Clock:    capabilities.SystemClock{},
+		}
+		p := probes.ElectrumProtocolState{
+			ComponentID: backend.ID, BitcoinComponentID: backend.BitcoinComponentID,
+			SideEffect: sideEffect, Timeout: timeout,
+		}
+		if err := runProbe(p, backend.ID, caps); err != nil {
+			return scan, err
+		}
+	}
+
 	evaluationTime := r.now()
-	scan.Findings = append(scan.Findings, evaluation.RPC(id, transportObs, rpcReason, evaluationTime))
-	scan.Findings = append(scan.Findings, evaluation.Chain(id, rpcObs, rpcReason, r.Config.Sync, evaluationTime)...)
-	scan.Findings = append(scan.Findings, evaluation.Filesystem(id, fsObs, fsReason, r.Config.Filesystem, evaluationTime))
-	if r.Config.Electrum.Enabled {
-		scan.Findings = append(scan.Findings, evaluation.Electrum(id, evaluation.ElectrumEvidence{
-			Transport: electrumTransportObs, Identity: electrumIdentityObs, Tip: electrumTipObs,
-			Bitcoin: rpcObs, BitcoinHash: bitcoinHashObs, Limitation: electrumReason,
-		}, r.Config.Electrum, evaluationTime)...)
+	for _, node := range bitcoinNodes {
+		bucket := bitcoinCollected[node.ID]
+		scan.Findings = append(scan.Findings, evaluation.RPC(id, node.ID, bucket.transport, bucket.rpcReason, evaluationTime))
+		scan.Findings = append(scan.Findings, evaluation.Chain(id, node.ID, bucket.chain, bucket.rpcReason, r.Config.Sync, evaluationTime)...)
+		scan.Findings = append(scan.Findings, evaluation.Filesystem(id, node.ID, bucket.fs, bucket.fsReason, r.Config.Filesystem, evaluationTime))
+	}
+	for _, backend := range electrumBackends {
+		bucket := electrumCollected[backend.ID]
+		bitcoinBucket := bitcoinCollected[backend.BitcoinComponentID]
+		var bitcoinChain *domain.Observation
+		if bitcoinBucket != nil {
+			bitcoinChain = bitcoinBucket.chain
+		}
+		scan.Findings = append(scan.Findings, evaluation.Electrum(id, backend.ID, evaluation.ElectrumEvidence{
+			Transport: bucket.transport, Identity: bucket.identity, Tip: bucket.tip,
+			Bitcoin: bitcoinChain, BitcoinHash: bucket.bitcoinHash, Limitation: bucket.reason,
+		}, r.Config.ElectrumThresholds, evaluationTime)...)
 	}
 	for _, f := range scan.Findings {
 		r.emit(Event{ID: f.ID + "-created", Type: "scan.finding.created", ScanID: id, OccurredAt: f.EvaluatedAt, FindingCode: f.Code, Outcome: string(f.Status)})
 	}
-	if r.Config.Electrum.Enabled {
-		scan.Diagnoses = correlation.Electrum(id, scan.Components, scan.DependencyEdges, scan.Findings, evaluationTime)
+	if len(electrumBackends) > 0 {
+		scan.Diagnoses = correlation.Electrum(id, scan.DependencyEdges, scan.Findings, evaluationTime)
 		for _, diagnosis := range scan.Diagnoses {
 			r.emit(Event{ID: diagnosis.ID + "-created", Type: "scan.diagnosis.created", ScanID: id, OccurredAt: diagnosis.DiagnosedAt, DiagnosisCode: diagnosis.Code, Outcome: string(diagnosis.Classification)})
 		}

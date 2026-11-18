@@ -250,7 +250,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Scan, error) {
 	if x.FinishedAt, e = parse(z); e != nil {
 		return x, e
 	}
-	x.Summary.ComponentID = "bitcoin.primary"
+	x.Summary.ComponentID = "scan.aggregate"
 	componentRows, e := s.db.QueryContext(ctx, `SELECT id,kind,implementation_family,implementation_version,display_alias,provenance,inventory_state FROM components WHERE scan_id=? ORDER BY id`, id)
 	if e != nil {
 		return x, e

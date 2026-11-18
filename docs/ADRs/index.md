@@ -9,3 +9,4 @@ ADR-008: Unknown results require explicit reasons
 ADR-009: Local-only and no outbound telemetry by default
 ADR-010: Platform packages wrap, but never fork, the engine
 ADR-011: Lab is a packaging consumer, not a package fork
+ADR-012: Multi-instance configured inventory (Bitcoin × N, Electrum × N)

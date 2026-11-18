@@ -45,9 +45,9 @@ func TestObservationValueValidation(t *testing.T) {
 func validScan() Scan {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	execution := ProbeExecution{ID: "execution", ScanID: "scan", ProbeID: "probe/v1", ProbeVersion: "1.0.0", Outcome: ExecutionCompleted, StartedAt: now, FinishedAt: now}
-	observation := Observation{ID: "observation", ScanID: "scan", ProbeExecutionID: execution.ID, ComponentID: "bitcoin.primary", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: RPCTransportResult{Reached: true, Authentication: AuthenticationAccepted, Category: "valid_json_rpc_response"}}
-	finding := Finding{ID: "finding", ScanID: "scan", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.primary", Status: Pass, Applicability: Applicable, Severity: SeverityNone, Confidence: ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: Required, Evidence: []EvidenceRef{{ObservationID: observation.ID, ObservationKind: observation.Kind, Role: EvidenceSupports}}}
-	return Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Components: BaseComponents(false), Executions: []ProbeExecution{execution}, Observations: []Observation{observation}, Findings: []Finding{finding}, Summary: ComponentSummary{ComponentID: "bitcoin.primary", Health: Healthy, Coverage: CoverageSummary{State: Complete, ApplicableRequired: 1, AssessedRequired: 1}}}
+	observation := Observation{ID: "observation", ScanID: "scan", ProbeExecutionID: execution.ID, ComponentID: "bitcoin.knots", Kind: "bitcoin.rpc.transport", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: RPCTransportResult{Reached: true, Authentication: AuthenticationAccepted, Category: "valid_json_rpc_response"}}
+	finding := Finding{ID: "finding", ScanID: "scan", Code: "bitcoin.rpc.reachable", ComponentID: "bitcoin.knots", Status: Pass, Applicability: Applicable, Severity: SeverityNone, Confidence: ConfidenceHigh, EvaluatorID: "test", EvaluatorVersion: "1", EvaluatedAt: now, Role: Required, Evidence: []EvidenceRef{{ObservationID: observation.ID, ObservationKind: observation.Kind, Role: EvidenceSupports}}}
+	return Scan{ID: "scan", StartedAt: now, FinishedAt: now, Status: "completed", Components: FixtureComponents(false), Executions: []ProbeExecution{execution}, Observations: []Observation{observation}, Findings: []Finding{finding}, Summary: ComponentSummary{ComponentID: ScanAggregateComponentID, Health: Healthy, Coverage: CoverageSummary{State: Complete, ApplicableRequired: 1, AssessedRequired: 1}}}
 }
 
 func TestScanReferentialInvariants(t *testing.T) {
@@ -86,10 +86,10 @@ func TestScanReferentialInvariants(t *testing.T) {
 func TestDependencyGraphInvariants(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	scan := validScan()
-	scan.Components = BaseComponents(true)
+	scan.Components = FixtureComponents(true)
 	scan.DependencyEdges = []DependencyEdge{{
-		ID: "electrum.primary-uses-chain-from-bitcoin.primary", SourceComponentID: "electrum.primary",
-		DestinationComponentID: "bitcoin.primary", Relationship: UsesChainFrom,
+		ID: "electrum.electrs-uses-chain-from-bitcoin.knots", SourceComponentID: "electrum.electrs",
+		DestinationComponentID: "bitcoin.knots", Relationship: UsesChainFrom,
 		Provenance: ProvenanceConfiguration, Confidence: ConfidenceHigh, RecordedAt: now,
 	}}
 	if err := scan.Validate(); err != nil {
@@ -142,7 +142,7 @@ func TestDiagnosisGraphInvariants(t *testing.T) {
 		ID: "diagnosis", ScanID: scan.ID, Code: "wallet-backend.electrum-protocol-breakpoint",
 		Classification: DiagnosisBreakPoint, Confidence: ConfidenceHigh,
 		SummaryKey:   "diagnosis.wallet-backend.electrum-protocol-breakpoint",
-		ComponentIDs: []string{"bitcoin.primary"}, FindingIDs: []string{"finding"},
+		ComponentIDs: []string{"bitcoin.knots"}, FindingIDs: []string{"finding"},
 		Evidence:          []EvidenceRef{{ObservationID: "observation", ObservationKind: "bitcoin.rpc.transport", Role: EvidenceSupports}},
 		CorrelationRuleID: "rule", CorrelationRuleVersion: "1.0.0", DiagnosedAt: scan.FinishedAt,
 	}}

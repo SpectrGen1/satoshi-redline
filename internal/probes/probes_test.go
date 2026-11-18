@@ -49,7 +49,7 @@ func (f fakeElectrum) Collect(context.Context) (electrum.Result, domain.UnknownR
 
 func TestElectrumProbeEmitsOnlyDeclaredNormalizedValues(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	probe := ElectrumProtocolState{SideEffect: LocalConnect}
+	probe := ElectrumProtocolState{ComponentID: "electrum.electrs", BitcoinComponentID: "bitcoin.knots", SideEffect: LocalConnect}
 	result := probe.Collect(context.Background(), capabilities.Set{Electrum: fakeElectrum{result: electrum.Result{
 		Transport: electrum.Transport{Reached: true, Kind: domain.ElectrumTransportTCP, TLSVerification: domain.TLSNotApplicable, ProtocolNegotiation: domain.ProtocolAccepted, Category: "valid_protocol_response"},
 		Identity:  &electrum.Identity{Family: domain.ElectrumElectrs, ProtocolVersion: "1.4.3"},
@@ -73,7 +73,7 @@ func TestElectrumProbeEmitsOnlyDeclaredNormalizedValues(t *testing.T) {
 }
 
 func TestElectrumProbePreservesSafeTransportOnProtocolFailure(t *testing.T) {
-	probe := ElectrumProtocolState{}
+	probe := ElectrumProtocolState{ComponentID: "electrum.electrs", BitcoinComponentID: "bitcoin.knots"}
 	result := probe.Collect(context.Background(), capabilities.Set{Electrum: fakeElectrum{
 		result: electrum.Result{Transport: electrum.Transport{
 			Reached: true, Kind: domain.ElectrumTransportTCP, TLSVerification: domain.TLSNotApplicable,
@@ -89,7 +89,7 @@ func TestElectrumProbePreservesSafeTransportOnProtocolFailure(t *testing.T) {
 func TestElectrumProbeCollectsOneBoundBitcoinHash(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	bitcoin := &fakeBitcoinHash{hash: "0011111111111111111111111111111111111111111111111111111111111111"}
-	result := (ElectrumProtocolState{}).Collect(context.Background(), capabilities.Set{
+	result := (ElectrumProtocolState{ComponentID: "electrum.electrs", BitcoinComponentID: "bitcoin.knots"}).Collect(context.Background(), capabilities.Set{
 		Electrum: fakeElectrum{result: electrum.Result{
 			Transport: electrum.Transport{Reached: true, Kind: domain.ElectrumTransportTCP, TLSVerification: domain.TLSNotApplicable, ProtocolNegotiation: domain.ProtocolAccepted, Category: "valid_protocol_response"},
 			Identity:  &electrum.Identity{Family: domain.ElectrumElectrs, ProtocolVersion: "1.4.3"},

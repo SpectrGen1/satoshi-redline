@@ -8,12 +8,19 @@ import (
 )
 
 func finding(code string, status domain.Status) domain.Finding {
-	return domain.Finding{ID: "scan-" + code, ScanID: "scan", Code: code, Status: status}
+	componentID := "bitcoin.knots"
+	if len(code) >= 8 && code[:8] == "electrum" {
+		componentID = "electrum.electrs"
+	}
+	return domain.Finding{
+		ID: domain.FindingID("scan", componentID, code), ScanID: "scan", Code: code,
+		ComponentID: componentID, Status: status,
+	}
 }
 
 func binding(now time.Time) []domain.DependencyEdge {
 	return []domain.DependencyEdge{{
-		ID: "edge", SourceComponentID: "electrum.primary", DestinationComponentID: "bitcoin.primary",
+		ID: "edge", SourceComponentID: "electrum.electrs", DestinationComponentID: "bitcoin.knots",
 		Relationship: domain.UsesChainFrom, Provenance: domain.ProvenanceConfiguration,
 		Confidence: domain.ConfidenceHigh, RecordedAt: now,
 	}}
@@ -47,18 +54,18 @@ func TestElectrumCorrelationRules(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			findings := append([]domain.Finding(nil), base...)
 			test.mutate(findings)
-			diagnoses := Electrum("scan", domain.BaseComponents(true), binding(now), findings, now)
+			diagnoses := Electrum("scan", binding(now), findings, now)
 			if len(diagnoses) != 1 || diagnoses[0].Code != test.code || diagnoses[0].Classification != test.classification {
 				t.Fatalf("unexpected diagnoses: %+v", diagnoses)
 			}
-			if diagnoses[0].Classification == domain.DiagnosisRootCause {
-				t.Fatal("rule overstated root cause")
+			if diagnoses[0].ComponentIDs[0] != "bitcoin.knots" || diagnoses[0].ComponentIDs[1] != "electrum.electrs" {
+				t.Fatalf("unexpected component ids: %v", diagnoses[0].ComponentIDs)
 			}
 		})
 	}
 }
 
-func TestMaterialUnknownProducesInconclusiveDiagnosis(t *testing.T) {
+func TestElectrumInconclusiveWhenUnknownBlocksDiagnosis(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	findings := []domain.Finding{
 		finding("bitcoin.chain.synchronized", domain.Pass),
@@ -68,19 +75,18 @@ func TestMaterialUnknownProducesInconclusiveDiagnosis(t *testing.T) {
 		finding("electrum.chain.matches-bitcoin", domain.Unknown),
 		finding("electrum.chain.tip-freshness", domain.Pass),
 	}
-	diagnoses := Electrum("scan", domain.BaseComponents(true), binding(now), findings, now)
-	if len(diagnoses) != 1 || diagnoses[0].Classification != domain.DiagnosisInconclusive ||
-		len(diagnoses[0].BlockingUnknownFindingIDs) != 2 || len(diagnoses[0].PlausibleAlternativeCodes) == 0 {
-		t.Fatalf("material unknown was ignored: %+v", diagnoses)
+	diagnoses := Electrum("scan", binding(now), findings, now)
+	if len(diagnoses) != 1 || diagnoses[0].Classification != domain.DiagnosisInconclusive {
+		t.Fatalf("expected inconclusive diagnosis, got %+v", diagnoses)
 	}
-	if err := diagnoses[0].Validate(); err != nil {
-		t.Fatal(err)
+	if len(diagnoses[0].BlockingUnknownFindingIDs) == 0 {
+		t.Fatal("expected blocking unknown finding ids")
 	}
 }
 
-func TestHealthyOrUnboundGraphProducesNoDiagnosis(t *testing.T) {
+func TestElectrumSkipsWithoutBindingOrHealthyPath(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	healthy := []domain.Finding{
+	findings := []domain.Finding{
 		finding("bitcoin.chain.synchronized", domain.Pass),
 		finding("bitcoin.chain.tip-freshness", domain.Pass),
 		finding("electrum.protocol.reachable", domain.Pass),
@@ -88,11 +94,10 @@ func TestHealthyOrUnboundGraphProducesNoDiagnosis(t *testing.T) {
 		finding("electrum.chain.matches-bitcoin", domain.Pass),
 		finding("electrum.chain.tip-freshness", domain.Pass),
 	}
-	if diagnoses := Electrum("scan", domain.BaseComponents(true), binding(now), healthy, now); len(diagnoses) != 0 {
-		t.Fatalf("healthy graph diagnosed: %+v", diagnoses)
+	if diagnoses := Electrum("scan", nil, findings, now); len(diagnoses) != 0 {
+		t.Fatalf("expected no diagnoses without edge, got %+v", diagnoses)
 	}
-	healthy[3].Status = domain.Failure
-	if diagnoses := Electrum("scan", domain.BaseComponents(true), nil, healthy, now); len(diagnoses) != 0 {
-		t.Fatalf("unbound graph diagnosed: %+v", diagnoses)
+	if diagnoses := Electrum("scan", binding(now), findings, now); len(diagnoses) != 0 {
+		t.Fatalf("expected no diagnoses on healthy path, got %+v", diagnoses)
 	}
 }

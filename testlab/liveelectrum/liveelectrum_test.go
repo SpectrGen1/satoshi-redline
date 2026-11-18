@@ -46,13 +46,21 @@ func TestLiveElectrumScan(t *testing.T) {
 
 	databasePath := filepath.Join(t.TempDir(), "live-electrum.db")
 	config := app.DefaultConfig()
-	config.Bitcoin.RPCEndpoint = rpcEndpoint
-	config.Bitcoin.CookieFile = cookieFile
-	config.Bitcoin.DataDirectory = dataDirectory
+	config.BitcoinNodes = []app.BitcoinNodeConfig{{
+		ID: "bitcoin.knots", Enabled: true, DisplayAlias: "Bitcoin Knots",
+		RPCEndpoint: rpcEndpoint, CookieFile: cookieFile, DataDirectory: dataDirectory,
+	}}
 	config.DatabasePath = databasePath
-	config.Electrum.Enabled = true
-	config.Electrum.Endpoint = electrumEndpoint
-	config.Electrum.BitcoinComponentID = "bitcoin.primary"
+	config.ElectrumBackends = []app.ElectrumBackendConfig{{
+		ID: "electrum.electrs", Enabled: true, DisplayAlias: "Electrs",
+		Endpoint: electrumEndpoint, TimeoutMS: 5000, BitcoinComponentID: "bitcoin.knots",
+	}}
+	if fulcrum := os.Getenv("REDLINE_LIVE_ELECTRUM_FULCRUM_ENDPOINT"); fulcrum != "" {
+		config.ElectrumBackends = append(config.ElectrumBackends, app.ElectrumBackendConfig{
+			ID: "electrum.fulcrum", Enabled: true, DisplayAlias: "Fulcrum",
+			Endpoint: fulcrum, TimeoutMS: 5000, BitcoinComponentID: "bitcoin.knots",
+		})
+	}
 	config.API.ListenAddress = localCanary
 	if err := config.Validate(); err != nil {
 		t.Fatal("live Electrum configuration did not validate")
@@ -119,7 +127,7 @@ func assertGraph(t *testing.T, scan domain.Scan) {
 	}
 	bound := false
 	for _, edge := range scan.DependencyEdges {
-		if edge.SourceComponentID == "electrum.primary" && edge.DestinationComponentID == "bitcoin.primary" && edge.Relationship == domain.UsesChainFrom {
+		if edge.SourceComponentID == "electrum.electrs" && edge.DestinationComponentID == "bitcoin.knots" && edge.Relationship == domain.UsesChainFrom {
 			bound = true
 		}
 	}

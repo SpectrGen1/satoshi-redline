@@ -19,7 +19,7 @@ an official platform package once packaging exists.
 
 options:
   --vm NAME
-  --electrum KIND     electrs (default), fulcrum, none
+  --electrum KIND     both (default), electrs, fulcrum, none
   --skip-build        reuse existing .lab/runtime/dist/redline-linux-amd64
   --print-only        build/config only; print remote run command
   -h, --help
@@ -27,7 +27,7 @@ EOF
 }
 
 VM=""
-ELECTRUM=electrs
+ELECTRUM=both
 SKIP_BUILD=0
 PRINT_ONLY=0
 RUNTIME="$(lab_default_runtime)"
@@ -67,8 +67,8 @@ done
 [[ -n "$VM" ]] || die "--vm is required"
 lab_validate_vm "$VM"
 case "$ELECTRUM" in
-  electrs|fulcrum|none) ;;
-  *) die "--electrum must be electrs, fulcrum, or none" ;;
+  both|electrs|fulcrum|none) ;;
+  *) die "--electrum must be both, electrs, fulcrum, or none" ;;
 esac
 
 need_cmd go
@@ -102,10 +102,19 @@ fi
 
 guest_cookie="$(lab_guest_cookie_path "$VM")"
 guest_rpc="$(lab_guest_rpc_endpoint "$VM")"
-guest_electrum="$(lab_guest_electrum_endpoint "$ELECTRUM")"
+guest_electrs=""
+guest_fulcrum=""
+case "$ELECTRUM" in
+  both)
+    guest_electrs="$(lab_guest_electrum_endpoint electrs)"
+    guest_fulcrum="$(lab_guest_electrum_endpoint fulcrum)"
+    ;;
+  electrs) guest_electrs="$(lab_guest_electrum_endpoint electrs)" ;;
+  fulcrum) guest_fulcrum="$(lab_guest_electrum_endpoint fulcrum)" ;;
+esac
 
 local_guest_config="$RUNTIME/guest-redline.json"
-lab_write_config "$local_guest_config" "$guest_rpc" "$guest_cookie" "$REMOTE_FS" "$guest_electrum" "$REMOTE_DB"
+lab_write_config "$local_guest_config" "$guest_rpc" "$guest_cookie" "$REMOTE_FS" "$REMOTE_DB" "$guest_electrs" "$guest_fulcrum"
 chmod 600 "$local_guest_config"
 
 note "installing binary and config on $VM under $REMOTE_DIR"

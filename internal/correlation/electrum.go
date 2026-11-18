@@ -15,32 +15,49 @@ const (
 	ruleVersion    = "1.0.0"
 )
 
-func Electrum(scanID string, _ []domain.Component, edges []domain.DependencyEdge, findings []domain.Finding, diagnosedAt time.Time) []domain.Diagnosis {
-	if !hasBinding(edges) {
-		return nil
+// Electrum correlates findings for every uses_chain_from electrum→bitcoin edge.
+func Electrum(scanID string, edges []domain.DependencyEdge, findings []domain.Finding, diagnosedAt time.Time) []domain.Diagnosis {
+	var out []domain.Diagnosis
+	for _, edge := range edges {
+		if edge.Relationship != domain.UsesChainFrom {
+			continue
+		}
+		out = append(out, correlatePair(scanID, edge.SourceComponentID, edge.DestinationComponentID, findings, diagnosedAt)...)
 	}
-	byCode := make(map[string]domain.Finding, len(findings))
+	return out
+}
+
+func correlatePair(scanID, electrumID, bitcoinID string, findings []domain.Finding, diagnosedAt time.Time) []domain.Diagnosis {
+	byCode := map[string]domain.Finding{}
 	for _, finding := range findings {
-		byCode[finding.Code] = finding
+		if finding.ComponentID != electrumID && finding.ComponentID != bitcoinID {
+			continue
+		}
+		// Index by component+code so multi-instance findings do not collide.
+		byCode[finding.ComponentID+"\x00"+finding.Code] = finding
 	}
-	bitcoinSync := byCode["bitcoin.chain.synchronized"]
-	bitcoinTip := byCode["bitcoin.chain.tip-freshness"]
-	electrumReach := byCode["electrum.protocol.reachable"]
-	electrumLag := byCode["electrum.chain.sync-lag"]
-	electrumMatch := byCode["electrum.chain.matches-bitcoin"]
-	electrumTip := byCode["electrum.chain.tip-freshness"]
+	get := func(componentID, code string) domain.Finding {
+		return byCode[componentID+"\x00"+code]
+	}
+
+	bitcoinSync := get(bitcoinID, "bitcoin.chain.synchronized")
+	bitcoinTip := get(bitcoinID, "bitcoin.chain.tip-freshness")
+	electrumReach := get(electrumID, "electrum.protocol.reachable")
+	electrumLag := get(electrumID, "electrum.chain.sync-lag")
+	electrumMatch := get(electrumID, "electrum.chain.matches-bitcoin")
+	electrumTip := get(electrumID, "electrum.chain.tip-freshness")
 
 	bitcoinHealthy := bitcoinSync.Status == domain.Pass && bitcoinTip.Status == domain.Pass
 	if bitcoinHealthy && electrumReach.Status == domain.Pass && (electrumLag.Status == domain.Failure || electrumMatch.Status == domain.Failure) {
 		return []domain.Diagnosis{newDiagnosis(
-			scanID, "wallet-backend.electrum-indexing-breakpoint", domain.DiagnosisBreakPoint,
+			scanID, electrumID, bitcoinID, "wallet-backend.electrum-indexing-breakpoint", domain.DiagnosisBreakPoint,
 			domain.ConfidenceHigh, indexingRuleID, diagnosedAt,
 			[]domain.Finding{bitcoinSync, bitcoinTip, electrumReach, failing(electrumLag, electrumMatch)},
 		)}
 	}
 	if bitcoinHealthy && electrumReach.Status == domain.Failure {
 		return []domain.Diagnosis{newDiagnosis(
-			scanID, "wallet-backend.electrum-protocol-breakpoint", domain.DiagnosisBreakPoint,
+			scanID, electrumID, bitcoinID, "wallet-backend.electrum-protocol-breakpoint", domain.DiagnosisBreakPoint,
 			domain.ConfidenceHigh, protocolRuleID, diagnosedAt,
 			[]domain.Finding{bitcoinSync, bitcoinTip, electrumReach},
 		)}
@@ -50,7 +67,7 @@ func Electrum(scanID string, _ []domain.Component, edges []domain.DependencyEdge
 		electrumTip.Status == domain.Warning || electrumTip.Status == domain.Failure
 	if bitcoinLimited && electrumLimited {
 		return []domain.Diagnosis{newDiagnosis(
-			scanID, "wallet-backend.upstream-bitcoin-limitation", domain.DiagnosisContributingFactor,
+			scanID, electrumID, bitcoinID, "wallet-backend.upstream-bitcoin-limitation", domain.DiagnosisContributingFactor,
 			domain.ConfidenceMedium, upstreamRuleID, diagnosedAt,
 			[]domain.Finding{failing(bitcoinSync, bitcoinTip), failing(electrumLag, electrumTip)},
 		)}
@@ -72,7 +89,7 @@ func Electrum(scanID string, _ []domain.Component, edges []domain.DependencyEdge
 		return nil
 	}
 	diagnosis := newDiagnosis(
-		scanID, "wallet-backend.electrum-diagnosis-inconclusive", domain.DiagnosisInconclusive,
+		scanID, electrumID, bitcoinID, "wallet-backend.electrum-diagnosis-inconclusive", domain.DiagnosisInconclusive,
 		domain.ConfidenceLow, unknownRuleID, diagnosedAt, present,
 	)
 	diagnosis.BlockingUnknownFindingIDs = blockers
@@ -84,15 +101,6 @@ func Electrum(scanID string, _ []domain.Component, edges []domain.DependencyEdge
 	return []domain.Diagnosis{diagnosis}
 }
 
-func hasBinding(edges []domain.DependencyEdge) bool {
-	for _, edge := range edges {
-		if edge.SourceComponentID == "electrum.primary" && edge.DestinationComponentID == "bitcoin.primary" && edge.Relationship == domain.UsesChainFrom {
-			return true
-		}
-	}
-	return false
-}
-
 func failing(first, second domain.Finding) domain.Finding {
 	if first.Status == domain.Failure || first.Status == domain.Warning {
 		return first
@@ -100,11 +108,11 @@ func failing(first, second domain.Finding) domain.Finding {
 	return second
 }
 
-func newDiagnosis(scanID, code string, classification domain.DiagnosisClassification, confidence domain.Confidence, ruleID string, diagnosedAt time.Time, findings []domain.Finding) domain.Diagnosis {
+func newDiagnosis(scanID, electrumID, bitcoinID, code string, classification domain.DiagnosisClassification, confidence domain.Confidence, ruleID string, diagnosedAt time.Time, findings []domain.Finding) domain.Diagnosis {
 	diagnosis := domain.Diagnosis{
-		ID: scanID + "-" + code, ScanID: scanID, Code: code, Classification: classification,
+		ID: domain.DiagnosisID(scanID, electrumID, bitcoinID, code), ScanID: scanID, Code: code, Classification: classification,
 		Confidence: confidence, SummaryKey: "diagnosis." + code,
-		ComponentIDs:      []string{"bitcoin.primary", "electrum.primary"},
+		ComponentIDs:      []string{bitcoinID, electrumID},
 		CorrelationRuleID: ruleID, CorrelationRuleVersion: ruleVersion, DiagnosedAt: diagnosedAt,
 	}
 	seenEvidence := map[string]bool{}

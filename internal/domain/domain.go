@@ -3,8 +3,11 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
+
+var componentIDPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{1,63}$`)
 
 type Status string
 
@@ -111,16 +114,19 @@ type Component struct {
 }
 
 func (c Component) Validate() error {
-	if c.ID == "" || c.DisplayAlias == "" || c.Provenance == "" || c.State == "" {
+	if c.DisplayAlias == "" || c.Provenance == "" || c.State == "" {
 		return fmt.Errorf("invalid component")
+	}
+	if !componentIDPattern.MatchString(c.ID) {
+		return fmt.Errorf("invalid component id")
 	}
 	switch c.Kind {
 	case ComponentBitcoinNode:
-		if c.ID != "bitcoin.primary" || c.ImplementationFamily != ImplementationBitcoin {
+		if c.ImplementationFamily != ImplementationBitcoin || c.ID == "system.local" || c.ID == "scan.aggregate" {
 			return fmt.Errorf("invalid bitcoin component")
 		}
 	case ComponentElectrumBackend:
-		if c.ID != "electrum.primary" || c.ImplementationFamily != ImplementationElectrum {
+		if c.ImplementationFamily != ImplementationElectrum || c.ID == "system.local" || c.ID == "scan.aggregate" {
 			return fmt.Errorf("invalid electrum component")
 		}
 	case ComponentLocalSystem:
@@ -128,7 +134,9 @@ func (c Component) Validate() error {
 			return fmt.Errorf("invalid system component")
 		}
 	case ComponentFilesystem:
-		if c.ID != "filesystem.bitcoin-data" || c.ImplementationFamily != ImplementationFilesystem {
+		// Optional kind retained for future per-node FS inventory; capacity currently
+		// attaches to the owning bitcoin node.
+		if c.ImplementationFamily != ImplementationFilesystem || c.ID == "system.local" {
 			return fmt.Errorf("invalid filesystem component")
 		}
 	default:
@@ -171,16 +179,37 @@ func (e DependencyEdge) Validate() error {
 	return nil
 }
 
-func BaseComponents(includeElectrum bool) []Component {
+// SystemLocal is the built-in local system component present in every inventory.
+func SystemLocal() Component {
+	return Component{
+		ID: "system.local", Kind: ComponentLocalSystem, ImplementationFamily: ImplementationSystem,
+		DisplayAlias: "Local system", Provenance: ProvenanceBuiltIn, State: InventoryConfigured,
+	}
+}
+
+// ScanAggregateComponentID is the component id used for scan-level health/coverage rollup.
+const ScanAggregateComponentID = "scan.aggregate"
+
+// FixtureComponents builds a minimal inventory for tests (not production config).
+func FixtureComponents(includeElectrum bool) []Component {
 	out := []Component{
-		{ID: "bitcoin.primary", Kind: ComponentBitcoinNode, ImplementationFamily: ImplementationBitcoin, DisplayAlias: "Bitcoin node", Provenance: ProvenanceConfiguration, State: InventoryConfigured},
-		{ID: "system.local", Kind: ComponentLocalSystem, ImplementationFamily: ImplementationSystem, DisplayAlias: "Local system", Provenance: ProvenanceBuiltIn, State: InventoryConfigured},
-		{ID: "filesystem.bitcoin-data", Kind: ComponentFilesystem, ImplementationFamily: ImplementationFilesystem, DisplayAlias: "Bitcoin data filesystem", Provenance: ProvenanceConfiguration, State: InventoryConfigured},
+		{ID: "bitcoin.knots", Kind: ComponentBitcoinNode, ImplementationFamily: ImplementationBitcoin, DisplayAlias: "Bitcoin Knots", Provenance: ProvenanceConfiguration, State: InventoryConfigured},
+		SystemLocal(),
 	}
 	if includeElectrum {
-		out = append(out, Component{ID: "electrum.primary", Kind: ComponentElectrumBackend, ImplementationFamily: ImplementationElectrum, DisplayAlias: "Electrum backend", Provenance: ProvenanceConfiguration, State: InventoryConfigured})
+		out = append(out, Component{ID: "electrum.electrs", Kind: ComponentElectrumBackend, ImplementationFamily: ImplementationElectrum, DisplayAlias: "Electrs", Provenance: ProvenanceConfiguration, State: InventoryConfigured})
 	}
 	return out
+}
+
+// FindingID builds a scan-unique finding id for a component-scoped finding code.
+func FindingID(scanID, componentID, code string) string {
+	return scanID + "-" + componentID + "-" + code
+}
+
+// DiagnosisID builds a scan-unique diagnosis id for an edge-scoped diagnosis code.
+func DiagnosisID(scanID, sourceID, destID, code string) string {
+	return scanID + "-" + sourceID + "-" + destID + "-" + code
 }
 
 type ExecutionOutcome string
@@ -868,8 +897,10 @@ func (s Scan) Validate() error {
 	if applicable != s.Summary.Coverage.ApplicableRequired || assessed != s.Summary.Coverage.AssessedRequired || unknown != s.Summary.Coverage.UnknownRequired {
 		return fmt.Errorf("coverage does not match findings")
 	}
-	if _, exists := components[s.Summary.ComponentID]; !exists {
-		return fmt.Errorf("summary component missing")
+	if s.Summary.ComponentID != ScanAggregateComponentID {
+		if _, exists := components[s.Summary.ComponentID]; !exists {
+			return fmt.Errorf("summary component missing")
+		}
 	}
 	switch s.Summary.Coverage.State {
 	case Complete:

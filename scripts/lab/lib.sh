@@ -365,46 +365,66 @@ lab_validate_vm() {
 }
 
 lab_write_config() {
-  local out="$1" rpc="$2" cookie="$3" data_dir="$4" electrum_ep="$5" db_path="$6"
-  local electrum_enabled=false
-  if [[ -n "$electrum_ep" ]]; then
-    electrum_enabled=true
-  fi
-  cat >"$out" <<EOF
-{
-  "bitcoin": {
-    "rpc_endpoint": $(printf '%s' "$rpc" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
-    "cookie_file": $(printf '%s' "$cookie" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
-    "cookie_env": "",
-    "data_directory": $(printf '%s' "$data_dir" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
-  },
-  "electrum": {
-    "enabled": $electrum_enabled,
-    "endpoint": $(printf '%s' "$electrum_ep" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
-    "timeout_ms": 5000,
-    "bitcoin_component_id": "bitcoin.primary",
-    "tip_warning_age_seconds": 3600,
-    "tip_failure_age_seconds": 7200,
-    "lag_warning_blocks": 2,
-    "lag_failure_blocks": 10,
-    "max_observation_skew_seconds": 30,
-    "max_observation_age_seconds": 60,
-    "max_future_skew_seconds": 300
-  },
-  "api": {
-    "listen_address": "127.0.0.1:8383"
-  },
-  "database_path": $(printf '%s' "$db_path" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
-  "rpc_timeout_ms": 10000,
-  "synchronization": {
-    "max_tip_age_seconds": 7200,
-    "min_verification_progress": 0.999,
-    "max_header_lag": 2
-  },
-  "filesystem": {
-    "warning_available_percent": 15,
-    "failure_available_percent": 5
-  }
+  # Args: OUT RPC COOKIE DATA_DIR DB_PATH [ELECTRS_EP] [FULCRUM_EP]
+  local out="$1" rpc="$2" cookie="$3" data_dir="$4" db_path="$5"
+  local electrs_ep="${6:-}" fulcrum_ep="${7:-}"
+  python3 - "$out" "$rpc" "$cookie" "$data_dir" "$db_path" "$electrs_ep" "$fulcrum_ep" <<'INNER'
+import json, sys
+out, rpc, cookie, data_dir, db_path, electrs_ep, fulcrum_ep = sys.argv[1:]
+backends = []
+if electrs_ep:
+    backends.append({
+        "id": "electrum.electrs",
+        "enabled": True,
+        "display_alias": "Electrs",
+        "endpoint": electrs_ep,
+        "timeout_ms": 5000,
+        "bitcoin_component_id": "bitcoin.knots",
+    })
+if fulcrum_ep:
+    backends.append({
+        "id": "electrum.fulcrum",
+        "enabled": True,
+        "display_alias": "Fulcrum",
+        "endpoint": fulcrum_ep,
+        "timeout_ms": 5000,
+        "bitcoin_component_id": "bitcoin.knots",
+    })
+cfg = {
+    "bitcoin_nodes": [{
+        "id": "bitcoin.knots",
+        "enabled": True,
+        "display_alias": "Bitcoin Knots",
+        "rpc_endpoint": rpc,
+        "cookie_file": cookie,
+        "cookie_env": "",
+        "data_directory": data_dir,
+    }],
+    "electrum_backends": backends,
+    "electrum_thresholds": {
+        "tip_warning_age_seconds": 3600,
+        "tip_failure_age_seconds": 7200,
+        "lag_warning_blocks": 2,
+        "lag_failure_blocks": 10,
+        "max_observation_skew_seconds": 30,
+        "max_observation_age_seconds": 60,
+        "max_future_skew_seconds": 300,
+    },
+    "api": {"listen_address": "127.0.0.1:8383"},
+    "database_path": db_path,
+    "rpc_timeout_ms": 10000,
+    "synchronization": {
+        "max_tip_age_seconds": 7200,
+        "min_verification_progress": 0.999,
+        "max_header_lag": 2,
+    },
+    "filesystem": {
+        "warning_available_percent": 15,
+        "failure_available_percent": 5,
+    },
 }
-EOF
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+INNER
 }

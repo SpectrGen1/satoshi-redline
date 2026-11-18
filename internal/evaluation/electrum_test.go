@@ -12,7 +12,7 @@ const testBlockHash = "001111111111111111111111111111111111111111111111111111111
 
 func electrumObservation(id, kind string, at time.Time, value domain.ObservationValue) *domain.Observation {
 	return &domain.Observation{
-		ID: id, ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "electrum.primary",
+		ID: id, ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "electrum.electrs",
 		Kind: kind, SchemaVersion: "v1", ObservedAt: at, CapabilityID: "electrum.protocol.read/v1",
 		ProviderID: "test", Sensitivity: "local_sensitive", Value: value,
 	}
@@ -20,7 +20,7 @@ func electrumObservation(id, kind string, at time.Time, value domain.Observation
 
 func bitcoinObservation(id, kind string, at time.Time, value domain.ObservationValue) *domain.Observation {
 	return &domain.Observation{
-		ID: id, ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.primary",
+		ID: id, ScanID: "scan", ProbeExecutionID: "execution", ComponentID: "bitcoin.knots",
 		Kind: kind, SchemaVersion: "v1", ObservedAt: at, CapabilityID: "bitcoin.rpc.read/v1",
 		ProviderID: "test", Sensitivity: "none", Value: value,
 	}
@@ -60,7 +60,7 @@ func findingByCode(t *testing.T, findings []domain.Finding, code string) domain.
 
 func TestElectrumHealthyEvidencePassesAllFindings(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	findings := Electrum("scan", completeElectrumEvidence(now), app.DefaultConfig().Electrum, now)
+	findings := Electrum("scan", "electrum.electrs", completeElectrumEvidence(now), app.DefaultConfig().ElectrumThresholds, now)
 	if len(findings) != 5 {
 		t.Fatalf("got %d findings", len(findings))
 	}
@@ -76,7 +76,7 @@ func TestElectrumHealthyEvidencePassesAllFindings(t *testing.T) {
 
 func TestElectrumTransportAndCompatibilityRemainDistinct(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	config := app.DefaultConfig().Electrum
+	config := app.DefaultConfig().ElectrumThresholds
 	tests := []struct {
 		name          string
 		transport     domain.ElectrumProtocolTransport
@@ -95,7 +95,7 @@ func TestElectrumTransportAndCompatibilityRemainDistinct(t *testing.T) {
 				Transport:  electrumObservation("transport", "electrum.protocol.transport", now, test.transport),
 				Limitation: test.limitation,
 			}
-			findings := Electrum("scan", evidence, config, now)
+			findings := Electrum("scan", "electrum.electrs", evidence, config, now)
 			if got := findingByCode(t, findings, "electrum.protocol.reachable"); got.Status != test.reachability {
 				t.Fatalf("reachability=%s", got.Status)
 			}
@@ -108,7 +108,7 @@ func TestElectrumTransportAndCompatibilityRemainDistinct(t *testing.T) {
 
 func TestElectrumTipFreshnessBoundaries(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	config := app.DefaultConfig().Electrum
+	config := app.DefaultConfig().ElectrumThresholds
 	tests := []struct {
 		name   string
 		tipAge time.Duration
@@ -124,7 +124,7 @@ func TestElectrumTipFreshnessBoundaries(t *testing.T) {
 			value := evidence.Tip.Value.(domain.ElectrumChainTip)
 			value.HeaderTime = now.Add(-test.tipAge)
 			evidence.Tip.Value = value
-			got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.tip-freshness")
+			got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.tip-freshness")
 			if got.Status != test.want {
 				t.Fatalf("got %s", got.Status)
 			}
@@ -134,19 +134,19 @@ func TestElectrumTipFreshnessBoundaries(t *testing.T) {
 	value := evidence.Tip.Value.(domain.ElectrumChainTip)
 	value.HeaderTime = now.Add(time.Duration(config.MaxFutureSkewSeconds+1) * time.Second)
 	evidence.Tip.Value = value
-	if got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.tip-freshness"); got.Status != domain.Unknown || got.Reasons[0].Code != domain.TemporallyInconsistent {
+	if got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.tip-freshness"); got.Status != domain.Unknown || got.Reasons[0].Code != domain.TemporallyInconsistent {
 		t.Fatalf("future tip: %+v", got)
 	}
 	evidence = completeElectrumEvidence(now)
 	evidence.Tip.ObservedAt = now.Add(-time.Duration(config.MaxObservationAgeSeconds+1) * time.Second)
-	if got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.tip-freshness"); got.Status != domain.Unknown || got.Reasons[0].Code != domain.StaleEvidence {
+	if got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.tip-freshness"); got.Status != domain.Unknown || got.Reasons[0].Code != domain.StaleEvidence {
 		t.Fatalf("stale observation: %+v", got)
 	}
 }
 
 func TestElectrumLagBoundariesAndUnknowns(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	config := app.DefaultConfig().Electrum
+	config := app.DefaultConfig().ElectrumThresholds
 	tests := []struct {
 		name string
 		lag  int64
@@ -163,7 +163,7 @@ func TestElectrumLagBoundariesAndUnknowns(t *testing.T) {
 			bitcoin.Blocks = 100 + test.lag
 			bitcoin.Headers = bitcoin.Blocks
 			evidence.Bitcoin.Value = bitcoin
-			got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.sync-lag")
+			got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.sync-lag")
 			if got.Status != test.want || (got.Status != domain.Unknown && len(got.Evidence) != 2) {
 				t.Fatalf("got %+v", got)
 			}
@@ -171,31 +171,31 @@ func TestElectrumLagBoundariesAndUnknowns(t *testing.T) {
 	}
 	evidence := completeElectrumEvidence(now)
 	evidence.Bitcoin = nil
-	if got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.sync-lag"); got.Status != domain.Unknown || got.MissingEvidence[0].ObservationKind != "bitcoin.chain.state" {
+	if got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.sync-lag"); got.Status != domain.Unknown || got.MissingEvidence[0].ObservationKind != "bitcoin.chain.state" {
 		t.Fatalf("missing Bitcoin evidence: %+v", got)
 	}
 	evidence = completeElectrumEvidence(now)
 	evidence.Bitcoin.ObservedAt = now.Add(-time.Duration(config.MaxObservationSkewSeconds+1) * time.Second)
-	if got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.sync-lag"); got.Status != domain.Unknown {
+	if got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.sync-lag"); got.Status != domain.Unknown {
 		t.Fatalf("skew accepted: %+v", got)
 	}
 }
 
 func TestElectrumChainMatchRequiresHashEvidence(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	config := app.DefaultConfig().Electrum
+	config := app.DefaultConfig().ElectrumThresholds
 	evidence := completeElectrumEvidence(now)
-	if got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.matches-bitcoin"); got.Status != domain.Pass || len(got.Evidence) != 2 {
+	if got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.matches-bitcoin"); got.Status != domain.Pass || len(got.Evidence) != 2 {
 		t.Fatalf("match: %+v", got)
 	}
 	hash := evidence.BitcoinHash.Value.(domain.BitcoinBlockHash)
 	hash.BlockHash = "ff11111111111111111111111111111111111111111111111111111111111111"
 	evidence.BitcoinHash.Value = hash
-	if got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.matches-bitcoin"); got.Status != domain.Failure {
+	if got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.matches-bitcoin"); got.Status != domain.Failure {
 		t.Fatalf("mismatch: %+v", got)
 	}
 	evidence.BitcoinHash = nil
-	if got := findingByCode(t, Electrum("scan", evidence, config, now), "electrum.chain.matches-bitcoin"); got.Status != domain.Unknown || got.MissingEvidence[0].ObservationKind != "bitcoin.chain.block-hash" {
+	if got := findingByCode(t, Electrum("scan", "electrum.electrs", evidence, config, now), "electrum.chain.matches-bitcoin"); got.Status != domain.Unknown || got.MissingEvidence[0].ObservationKind != "bitcoin.chain.block-hash" {
 		t.Fatalf("missing hash: %+v", got)
 	}
 }

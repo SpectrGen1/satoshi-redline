@@ -77,9 +77,10 @@ func TestCanariesDoNotCrossBoundaries(t *testing.T) {
 	var scans []domain.Scan
 	for _, endpoint := range []string{malformedRPC.URL, errorRPC.URL, "http://" + endpointUserinfo + ":password@127.0.0.1:8332"} {
 		cfg := app.DefaultConfig()
-		cfg.Bitcoin.RPCEndpoint = endpoint
-		cfg.Bitcoin.CookieFile = cookie
-		cfg.Bitcoin.DataDirectory = dataDir
+		cfg.BitcoinNodes = []app.BitcoinNodeConfig{{
+			ID: "bitcoin.knots", Enabled: true, DisplayAlias: "Bitcoin Knots",
+			RPCEndpoint: endpoint, CookieFile: cookie, DataDirectory: dataDir,
+		}}
 		cfg.DatabasePath = dbPath
 		scan, scanErr := (engine.Runner{Config: cfg, Now: now}).ScanAndPersist(context.Background(), store)
 		if scanErr != nil {
@@ -88,13 +89,15 @@ func TestCanariesDoNotCrossBoundaries(t *testing.T) {
 		scans = append(scans, scan)
 	}
 	electrumConfig := app.DefaultConfig()
-	electrumConfig.Bitcoin.RPCEndpoint = errorRPC.URL
-	electrumConfig.Bitcoin.CookieFile = cookie
-	electrumConfig.Bitcoin.DataDirectory = dataDir
+	electrumConfig.BitcoinNodes = []app.BitcoinNodeConfig{{
+		ID: "bitcoin.knots", Enabled: true, DisplayAlias: "Bitcoin Knots",
+		RPCEndpoint: errorRPC.URL, CookieFile: cookie, DataDirectory: dataDir,
+	}}
 	electrumConfig.DatabasePath = dbPath
-	electrumConfig.Electrum.Enabled = true
-	electrumConfig.Electrum.Endpoint = "tcp://" + electrumListener.Addr().String()
-	electrumConfig.Electrum.BitcoinComponentID = "bitcoin.primary"
+	electrumConfig.ElectrumBackends = []app.ElectrumBackendConfig{{
+		ID: "electrum.electrs", Enabled: true, DisplayAlias: "Electrs",
+		Endpoint: "tcp://" + electrumListener.Addr().String(), TimeoutMS: 5000, BitcoinComponentID: "bitcoin.knots",
+	}}
 	electrumScan, scanErr := (engine.Runner{Config: electrumConfig, Now: now}).ScanAndPersist(context.Background(), store)
 	if scanErr != nil {
 		t.Fatal(scanErr)

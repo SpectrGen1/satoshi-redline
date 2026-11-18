@@ -36,9 +36,10 @@ func TestLiveBitcoinScan(t *testing.T) {
 
 	databasePath := filepath.Join(t.TempDir(), "live-smoke.db")
 	config := app.DefaultConfig()
-	config.Bitcoin.RPCEndpoint = endpoint
-	config.Bitcoin.CookieFile = cookieFile
-	config.Bitcoin.DataDirectory = dataDirectory
+	config.BitcoinNodes = []app.BitcoinNodeConfig{{
+		ID: "bitcoin.knots", Enabled: true, DisplayAlias: "Bitcoin Knots",
+		RPCEndpoint: endpoint, CookieFile: cookieFile, DataDirectory: dataDirectory,
+	}}
 	config.DatabasePath = databasePath
 	config.API.ListenAddress = liveCanary
 	if err := config.Validate(); err != nil {

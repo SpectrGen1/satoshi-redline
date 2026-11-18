@@ -9,8 +9,10 @@ import (
 )
 
 type ElectrumProtocolState struct {
-	SideEffect SideEffect
-	Timeout    time.Duration
+	ComponentID        string // electrum backend component id
+	BitcoinComponentID string // bound bitcoin component id for block-hash observations
+	SideEffect         SideEffect
+	Timeout            time.Duration
 }
 
 func (p ElectrumProtocolState) Descriptor() Descriptor {
@@ -35,14 +37,19 @@ func (p ElectrumProtocolState) Descriptor() Descriptor {
 	}
 }
 
-func (ElectrumProtocolState) Collect(ctx context.Context, capabilitiesSet capabilities.Set, scanID, executionID string, now time.Time) Result {
+func (p ElectrumProtocolState) Collect(ctx context.Context, capabilitiesSet capabilities.Set, scanID, executionID string, now time.Time) Result {
+	subject := p.ComponentID
+	bitcoinID := p.BitcoinComponentID
+	if subject == "" {
+		return Result{Reason: domain.RequiredObservationMissing}
+	}
 	if capabilitiesSet.Electrum == nil {
 		return Result{Reason: domain.RequiredObservationMissing}
 	}
 	collected, reason := capabilitiesSet.Electrum.Collect(ctx)
 	transport := domain.Observation{
 		ID: executionID + "-transport", ScanID: scanID, ProbeExecutionID: executionID,
-		ComponentID: "electrum.primary", Kind: "electrum.protocol.transport", SchemaVersion: "v1",
+		ComponentID: subject, Kind: "electrum.protocol.transport", SchemaVersion: "v1",
 		ObservedAt: now, CapabilityID: string(capabilities.ElectrumRead),
 		ProviderID: "configured.electrum-protocol", Sensitivity: "local_sensitive",
 		Value: domain.ElectrumProtocolTransport{
@@ -56,7 +63,7 @@ func (ElectrumProtocolState) Collect(ctx context.Context, capabilitiesSet capabi
 	if collected.Identity != nil && reason == "" {
 		values = append(values, domain.Observation{
 			ID: executionID + "-identity", ScanID: scanID, ProbeExecutionID: executionID,
-			ComponentID: "electrum.primary", Kind: "electrum.server.identity", SchemaVersion: "v1",
+			ComponentID: subject, Kind: "electrum.server.identity", SchemaVersion: "v1",
 			ObservedAt: now, CapabilityID: string(capabilities.ElectrumRead),
 			ProviderID: "configured.electrum-protocol", Sensitivity: "local_sensitive",
 			Value: domain.ElectrumServerIdentity{
@@ -68,21 +75,21 @@ func (ElectrumProtocolState) Collect(ctx context.Context, capabilitiesSet capabi
 	if collected.Tip != nil && reason == "" {
 		values = append(values, domain.Observation{
 			ID: executionID + "-tip", ScanID: scanID, ProbeExecutionID: executionID,
-			ComponentID: "electrum.primary", Kind: "electrum.chain.tip", SchemaVersion: "v1",
+			ComponentID: subject, Kind: "electrum.chain.tip", SchemaVersion: "v1",
 			ObservedAt: now, CapabilityID: string(capabilities.ElectrumRead),
 			ProviderID: "configured.electrum-protocol", Sensitivity: "local_sensitive",
 			Value: domain.ElectrumChainTip{
 				Height: collected.Tip.Height, BlockHash: collected.Tip.BlockHash, HeaderTime: collected.Tip.HeaderTime,
 			},
 		})
-		if capabilitiesSet.Bitcoin != nil {
+		if capabilitiesSet.Bitcoin != nil && bitcoinID != "" {
 			hash, hashReason, _ := capabilitiesSet.Bitcoin.BlockHash(ctx, collected.Tip.Height)
 			if hashReason != "" {
 				reason = hashReason
 			} else {
 				values = append(values, domain.Observation{
 					ID: executionID + "-bitcoin-hash", ScanID: scanID, ProbeExecutionID: executionID,
-					ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.block-hash", SchemaVersion: "v1",
+					ComponentID: bitcoinID, Kind: "bitcoin.chain.block-hash", SchemaVersion: "v1",
 					ObservedAt: now, CapabilityID: string(capabilities.BitcoinRPCRead),
 					ProviderID: "configured.bitcoin-rpc", Sensitivity: "none",
 					Value: domain.BitcoinBlockHash{Height: collected.Tip.Height, BlockHash: hash},

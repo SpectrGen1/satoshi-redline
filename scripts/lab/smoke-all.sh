@@ -15,7 +15,7 @@ print a summary. Does not manage lab VM lifecycle — guests must already be up.
 EOF
 }
 
-ELECTRUM=electrs
+ELECTRUM=both
 VMS=(umbrel ubuntu startos)
 
 while [[ $# -gt 0 ]]; do

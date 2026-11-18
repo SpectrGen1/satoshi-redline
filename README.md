@@ -11,7 +11,7 @@ go test -race ./...
 go vet ./...
 ```
 
-Copy `redline.example.json` to `redline.json`, set the local Bitcoin endpoint, cookie-file reference, data directory, and database path. Electrum remains disabled unless `electrum.enabled` is true and an explicit `tcp://` or `ssl://` endpoint and `bitcoin.primary` binding are supplied. Environment overrides include `REDLINE_RPC_ENDPOINT`, `REDLINE_DATA_DIRECTORY`, `REDLINE_API_LISTEN_ADDRESS`, `REDLINE_DATABASE_PATH`, `REDLINE_RPC_TIMEOUT_MS`, `REDLINE_ELECTRUM_ENABLED`, `REDLINE_ELECTRUM_ENDPOINT`, `REDLINE_ELECTRUM_TIMEOUT_MS`, and `REDLINE_ELECTRUM_BITCOIN_COMPONENT_ID`.
+Copy `redline.example.json` to `redline.json` and edit `bitcoin_nodes` and `electrum_backends` arrays. Each entry has a stable `id`, `enabled` attention flag, and endpoints. Bind each Electrum backend to a bitcoin node via `bitcoin_component_id`. Example includes Knots + Electrs + Fulcrum.
 
 RPC authentication supports an existing Bitcoin cookie file or an environment-backed cookie value for local development. Transport evidence records authentication as `accepted`, `rejected`, or `unknown`; lack of evidence is never represented as rejection.
 

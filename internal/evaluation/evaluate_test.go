@@ -13,8 +13,8 @@ func TestChainFutureTipIsUnknown(t *testing.T) {
 	p := 1.0
 	ibd := false
 	tip := n.Add(2 * time.Minute)
-	o := &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", ObservedAt: n, Value: domain.BitcoinChainState{Blocks: b, Headers: h, VerificationProgress: p, InitialBlockDownload: ibd, TipTime: tip}}
-	f := Chain("s", o, "", app.DefaultConfig().Sync, n)
+	o := &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.knots", Kind: "bitcoin.chain.state", SchemaVersion: "v1", CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", ObservedAt: n, Value: domain.BitcoinChainState{Blocks: b, Headers: h, VerificationProgress: p, InitialBlockDownload: ibd, TipTime: tip}}
+	f := Chain("s", "bitcoin.knots", o, "", app.DefaultConfig().Sync, n)
 	if f[0].Status != domain.Unknown || f[0].Reasons[0].Code != domain.TemporallyInconsistent {
 		t.Fatalf("%+v", f[0])
 	}
@@ -31,7 +31,7 @@ func TestFilesystemBoundariesAndInvalidValues(t *testing.T) {
 	n := time.Now().UTC()
 	cfg := app.DefaultConfig().Filesystem
 	makeObs := func(v domain.FilesystemCapacity) *domain.Observation {
-		return &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "filesystem.capacity", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "filesystem.stat/v1", ProviderID: "test", Sensitivity: "none", Value: v}
+		return &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.knots", Kind: "filesystem.capacity", SchemaVersion: "v1", ObservedAt: n, CapabilityID: "filesystem.stat/v1", ProviderID: "test", Sensitivity: "none", Value: v}
 	}
 	tests := []struct {
 		name string
@@ -40,7 +40,7 @@ func TestFilesystemBoundariesAndInvalidValues(t *testing.T) {
 	}{{"healthy", domain.FilesystemCapacity{TotalBytes: 100, AvailableBytes: 50, MountPresent: true}, domain.Pass}, {"warning", domain.FilesystemCapacity{TotalBytes: 100, AvailableBytes: 15, MountPresent: true}, domain.Warning}, {"failure", domain.FilesystemCapacity{TotalBytes: 100, AvailableBytes: 5, MountPresent: true}, domain.Failure}, {"read only", domain.FilesystemCapacity{TotalBytes: 100, AvailableBytes: 50, MountPresent: true, ReadOnly: true}, domain.Failure}, {"zero total", domain.FilesystemCapacity{MountPresent: true}, domain.Unknown}, {"available exceeds total", domain.FilesystemCapacity{TotalBytes: 100, AvailableBytes: 101, MountPresent: true}, domain.Unknown}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Filesystem("s", makeObs(tt.v), "", cfg, n); got.Status != tt.want {
+			if got := Filesystem("s", "bitcoin.knots", makeObs(tt.v), "", cfg, n); got.Status != tt.want {
 				t.Fatalf("got %s", got.Status)
 			}
 		})
@@ -51,7 +51,7 @@ func TestChainEvaluationMatrix(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	cfg := app.DefaultConfig().Sync
 	observation := func(value domain.BitcoinChainState) *domain.Observation {
-		return &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.primary", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: value}
+		return &domain.Observation{ID: "o", ScanID: "s", ProbeExecutionID: "p", ComponentID: "bitcoin.knots", Kind: "bitcoin.chain.state", SchemaVersion: "v1", ObservedAt: now, CapabilityID: "bitcoin.rpc.read/v1", ProviderID: "test", Sensitivity: "none", Value: value}
 	}
 	base := domain.BitcoinChainState{Blocks: 100, Headers: 100, VerificationProgress: 1, TipTime: now}
 	tests := []struct {
@@ -72,7 +72,7 @@ func TestChainEvaluationMatrix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			value := base
 			tt.edit(&value)
-			findings := Chain("s", observation(value), "", cfg, now)
+			findings := Chain("s", "bitcoin.knots", observation(value), "", cfg, now)
 			if findings[0].Status != tt.sync || findings[1].Status != tt.tip {
 				t.Fatalf("got %s/%s", findings[0].Status, findings[1].Status)
 			}

@@ -6,11 +6,22 @@ import (
 	"time"
 )
 
-func assessed(scan, code string, status domain.Status, severity domain.Severity, now time.Time, obs domain.Observation, thresholds domain.Thresholds) domain.Finding {
-	return domain.Finding{ID: scan + "-" + code, ScanID: scan, Code: code, ComponentID: "bitcoin.primary", Status: status, Applicability: domain.Applicable, Severity: severity, Confidence: domain.ConfidenceHigh, EvaluatorID: "redline." + code, EvaluatorVersion: "1.0.0", EvaluatedAt: now, Role: domain.Required, Evidence: []domain.EvidenceRef{{ObservationID: obs.ID, ObservationKind: obs.Kind, Role: domain.EvidenceSupports}}, Thresholds: thresholds}
+func assessed(scan, componentID, code string, status domain.Status, severity domain.Severity, now time.Time, obs domain.Observation, thresholds domain.Thresholds) domain.Finding {
+	return domain.Finding{
+		ID: domain.FindingID(scan, componentID, code), ScanID: scan, Code: code, ComponentID: componentID,
+		Status: status, Applicability: domain.Applicable, Severity: severity, Confidence: domain.ConfidenceHigh,
+		EvaluatorID: "redline." + code, EvaluatorVersion: "1.0.0", EvaluatedAt: now, Role: domain.Required,
+		Evidence: []domain.EvidenceRef{{ObservationID: obs.ID, ObservationKind: obs.Kind, Role: domain.EvidenceSupports}}, Thresholds: thresholds,
+	}
 }
-func unknown(scan, code, kind string, reason domain.UnknownReasonCode, now time.Time, thresholds domain.Thresholds) domain.Finding {
-	return domain.Finding{ID: scan + "-" + code, ScanID: scan, Code: code, ComponentID: "bitcoin.primary", Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow, EvaluatorID: "redline." + code, EvaluatorVersion: "1.0.0", EvaluatedAt: now, Role: domain.Required, Reasons: []domain.UnknownReason{domain.Reason(reason)}, MissingEvidence: []domain.MissingEvidence{{ObservationKind: kind, Problem: problem(reason), ReasonCode: reason}}, Thresholds: thresholds}
+func unknown(scan, componentID, code, kind string, reason domain.UnknownReasonCode, now time.Time, thresholds domain.Thresholds) domain.Finding {
+	return domain.Finding{
+		ID: domain.FindingID(scan, componentID, code), ScanID: scan, Code: code, ComponentID: componentID,
+		Status: domain.Unknown, Applicability: domain.Applicable, Severity: domain.SeverityNone, Confidence: domain.ConfidenceLow,
+		EvaluatorID: "redline." + code, EvaluatorVersion: "1.0.0", EvaluatedAt: now, Role: domain.Required,
+		Reasons:         []domain.UnknownReason{domain.Reason(reason)},
+		MissingEvidence: []domain.MissingEvidence{{ObservationKind: kind, Problem: problem(reason), ReasonCode: reason}}, Thresholds: thresholds,
+	}
 }
 func problem(r domain.UnknownReasonCode) domain.EvidenceProblem {
 	if r == domain.StaleEvidence {
@@ -21,26 +32,29 @@ func problem(r domain.UnknownReasonCode) domain.EvidenceProblem {
 	}
 	return domain.EvidenceMissing
 }
-func RPC(scan string, obs *domain.Observation, reason domain.UnknownReasonCode, now time.Time) domain.Finding {
+func RPC(scan, componentID string, obs *domain.Observation, reason domain.UnknownReasonCode, now time.Time) domain.Finding {
 	if obs == nil {
-		return unknown(scan, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", first(reason, domain.RequiredObservationMissing), now, domain.Thresholds{})
+		return unknown(scan, componentID, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", first(reason, domain.RequiredObservationMissing), now, domain.Thresholds{})
 	}
 	v, ok := obs.Value.(domain.RPCTransportResult)
 	if !ok {
-		return unknown(scan, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", domain.InvalidResponse, now, domain.Thresholds{})
+		return unknown(scan, componentID, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", domain.InvalidResponse, now, domain.Thresholds{})
 	}
 	if v.Reached {
-		return assessed(scan, "bitcoin.rpc.reachable", domain.Pass, domain.SeverityNone, now, *obs, domain.Thresholds{})
+		return assessed(scan, componentID, "bitcoin.rpc.reachable", domain.Pass, domain.SeverityNone, now, *obs, domain.Thresholds{})
 	}
 	if reason == domain.ConnectionRefused || reason == domain.RouteUnreachable || reason == domain.ProtocolError {
-		return assessed(scan, "bitcoin.rpc.reachable", domain.Failure, domain.SeverityHigh, now, *obs, domain.Thresholds{})
+		return assessed(scan, componentID, "bitcoin.rpc.reachable", domain.Failure, domain.SeverityHigh, now, *obs, domain.Thresholds{})
 	}
-	return unknown(scan, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", first(reason, domain.RequiredObservationMissing), now, domain.Thresholds{})
+	return unknown(scan, componentID, "bitcoin.rpc.reachable", "bitcoin.rpc.transport", first(reason, domain.RequiredObservationMissing), now, domain.Thresholds{})
 }
-func Chain(scan string, obs *domain.Observation, reason domain.UnknownReasonCode, c app.SyncThresholds, now time.Time) []domain.Finding {
+func Chain(scan, componentID string, obs *domain.Observation, reason domain.UnknownReasonCode, c app.SyncThresholds, now time.Time) []domain.Finding {
 	t := domain.Thresholds{MaxTipAgeSeconds: c.MaxTipAgeSeconds, MinVerificationProgress: c.MinVerificationProgress, MaxHeaderLag: c.MaxHeaderLag}
 	u := func(r domain.UnknownReasonCode) []domain.Finding {
-		return []domain.Finding{unknown(scan, "bitcoin.chain.synchronized", "bitcoin.chain.state", r, now, t), unknown(scan, "bitcoin.chain.tip-freshness", "bitcoin.chain.state", r, now, t)}
+		return []domain.Finding{
+			unknown(scan, componentID, "bitcoin.chain.synchronized", "bitcoin.chain.state", r, now, t),
+			unknown(scan, componentID, "bitcoin.chain.tip-freshness", "bitcoin.chain.state", r, now, t),
+		}
 	}
 	if obs == nil {
 		return u(first(reason, domain.RequiredObservationMissing))
@@ -53,7 +67,10 @@ func Chain(scan string, obs *domain.Observation, reason domain.UnknownReasonCode
 		return u(domain.TemporallyInconsistent)
 	}
 	if now.Sub(v.TipTime) > time.Duration(c.MaxTipAgeSeconds)*time.Second {
-		return []domain.Finding{unknown(scan, "bitcoin.chain.synchronized", "bitcoin.chain.state", domain.StaleEvidence, now, t), assessed(scan, "bitcoin.chain.tip-freshness", domain.Warning, domain.SeverityMedium, now, *obs, t)}
+		return []domain.Finding{
+			unknown(scan, componentID, "bitcoin.chain.synchronized", "bitcoin.chain.state", domain.StaleEvidence, now, t),
+			assessed(scan, componentID, "bitcoin.chain.tip-freshness", domain.Warning, domain.SeverityMedium, now, *obs, t),
+		}
 	}
 	syncStatus := domain.Pass
 	sev := domain.SeverityNone
@@ -61,16 +78,19 @@ func Chain(scan string, obs *domain.Observation, reason domain.UnknownReasonCode
 		syncStatus = domain.Failure
 		sev = domain.SeverityHigh
 	}
-	return []domain.Finding{assessed(scan, "bitcoin.chain.synchronized", syncStatus, sev, now, *obs, t), assessed(scan, "bitcoin.chain.tip-freshness", domain.Pass, domain.SeverityNone, now, *obs, t)}
+	return []domain.Finding{
+		assessed(scan, componentID, "bitcoin.chain.synchronized", syncStatus, sev, now, *obs, t),
+		assessed(scan, componentID, "bitcoin.chain.tip-freshness", domain.Pass, domain.SeverityNone, now, *obs, t),
+	}
 }
-func Filesystem(scan string, obs *domain.Observation, reason domain.UnknownReasonCode, c app.FilesystemThresholds, now time.Time) domain.Finding {
+func Filesystem(scan, componentID string, obs *domain.Observation, reason domain.UnknownReasonCode, c app.FilesystemThresholds, now time.Time) domain.Finding {
 	t := domain.Thresholds{WarningAvailablePercent: c.WarningAvailablePercent, FailureAvailablePercent: c.FailureAvailablePercent}
 	if obs == nil {
-		return unknown(scan, "filesystem.capacity-pressure", "filesystem.capacity", first(reason, domain.RequiredObservationMissing), now, t)
+		return unknown(scan, componentID, "filesystem.capacity-pressure", "filesystem.capacity", first(reason, domain.RequiredObservationMissing), now, t)
 	}
 	v, ok := obs.Value.(domain.FilesystemCapacity)
 	if !ok || v.Validate() != nil {
-		return unknown(scan, "filesystem.capacity-pressure", "filesystem.capacity", domain.InvalidResponse, now, t)
+		return unknown(scan, componentID, "filesystem.capacity-pressure", "filesystem.capacity", domain.InvalidResponse, now, t)
 	}
 	status, sev := domain.Pass, domain.SeverityNone
 	if !v.MountPresent || v.ReadOnly {
@@ -83,7 +103,7 @@ func Filesystem(scan string, obs *domain.Observation, reason domain.UnknownReaso
 			status, sev = domain.Warning, domain.SeverityMedium
 		}
 	}
-	return assessed(scan, "filesystem.capacity-pressure", status, sev, now, *obs, t)
+	return assessed(scan, componentID, "filesystem.capacity-pressure", status, sev, now, *obs, t)
 }
 func first(a, b domain.UnknownReasonCode) domain.UnknownReasonCode {
 	if a != "" {
@@ -91,8 +111,10 @@ func first(a, b domain.UnknownReasonCode) domain.UnknownReasonCode {
 	}
 	return b
 }
+
+// Summary aggregates all required findings into a scan-level rollup.
 func Summary(fs []domain.Finding) domain.ComponentSummary {
-	s := domain.ComponentSummary{ComponentID: "bitcoin.primary"}
+	s := domain.ComponentSummary{ComponentID: domain.ScanAggregateComponentID}
 	for _, f := range fs {
 		if f.Role != domain.Required || f.Applicability != domain.Applicable {
 			continue

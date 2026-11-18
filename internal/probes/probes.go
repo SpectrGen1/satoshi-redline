@@ -62,6 +62,8 @@ func NewCatalog(items ...Probe) (Catalog, error) {
 		if e := d.Validate(); e != nil {
 			return Catalog{}, e
 		}
+		// Catalog uniqueness is by probe type id; multi-instance scheduling
+		// reuses the same type with different ComponentID outside the catalog.
 		if seen[d.ID] {
 			return Catalog{}, fmt.Errorf("duplicate probe %q", d.ID)
 		}
@@ -72,5 +74,9 @@ func NewCatalog(items ...Probe) (Catalog, error) {
 }
 func (c Catalog) Probes() []Probe { return append([]Probe(nil), c.probes...) }
 func CompiledCatalog() (Catalog, error) {
-	return NewCatalog(BitcoinChainState{}, FilesystemCapacity{}, ElectrumProtocolState{SideEffect: LANConnect})
+	return NewCatalog(
+		BitcoinChainState{ComponentID: "bitcoin.knots"},
+		FilesystemCapacity{ComponentID: "bitcoin.knots"},
+		ElectrumProtocolState{ComponentID: "electrum.electrs", BitcoinComponentID: "bitcoin.knots", SideEffect: LANConnect},
+	)
 }
